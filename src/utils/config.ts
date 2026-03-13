@@ -1,4 +1,4 @@
-import type { CliConfig, ChainConfig } from '../types';
+import type { CliConfig, ChainConfig } from "../types";
 
 /**
  * Default chain configurations.
@@ -17,19 +17,21 @@ import type { CliConfig, ChainConfig } from '../types';
 // ─── Public fallback endpoints ──────────────────────────────────────
 
 const PUBLIC_RPC: Record<number, string> = {
-  1: 'https://ethereum-rpc.publicnode.com',
-  10: 'https://optimism-rpc.publicnode.com',
-  42161: 'https://arbitrum-one-rpc.publicnode.com',
-  11155111: 'https://ethereum-sepolia-rpc.publicnode.com',
-  11155420: 'https://optimism-sepolia-rpc.publicnode.com',
+  1: "https://ethereum-rpc.publicnode.com",
+  10: "https://optimism-rpc.publicnode.com",
+  42161: "https://arbitrum-one-rpc.publicnode.com",
+  8453: "https://base-rpc.publicnode.com",
+  11155111: "https://ethereum-sepolia-rpc.publicnode.com",
+  11155420: "https://optimism-sepolia-rpc.publicnode.com",
 };
 
 const PUBLIC_BUNDLER: Record<number, string> = {
-  1: 'https://public.pimlico.io/v2/1/rpc',
-  10: 'https://public.pimlico.io/v2/10/rpc',
-  42161: 'https://public.pimlico.io/v2/42161/rpc',
-  11155111: 'https://public.pimlico.io/v2/11155111/rpc',
-  11155420: 'https://public.pimlico.io/v2/11155420/rpc',
+  1: "https://public.pimlico.io/v2/1/rpc",
+  10: "https://public.pimlico.io/v2/10/rpc",
+  42161: "https://public.pimlico.io/v2/42161/rpc",
+  8453: "https://public.pimlico.io/v2/8453/rpc",
+  11155111: "https://public.pimlico.io/v2/11155111/rpc",
+  11155420: "https://public.pimlico.io/v2/11155420/rpc",
 };
 
 // ─── Keyed endpoint builders ────────────────────────────────────────
@@ -45,19 +47,21 @@ function alchemyUrl(network: string, key: string): string {
 // ─── Chain slug mappings ────────────────────────────────────────────
 
 const ALCHEMY_NETWORK: Record<number, string> = {
-  1: 'eth-mainnet',
-  10: 'opt-mainnet',
-  42161: 'arb-mainnet',
-  11155111: 'eth-sepolia',
-  11155420: 'opt-sepolia',
+  1: "eth-mainnet",
+  10: "opt-mainnet",
+  42161: "arb-mainnet",
+  8453: "base-mainnet",
+  11155111: "eth-sepolia",
+  11155420: "opt-sepolia",
 };
 
 const PIMLICO_SLUG: Record<number, string> = {
-  1: 'ethereum',
-  10: 'optimism',
-  42161: 'arbitrum',
-  11155111: 'sepolia',
-  11155420: 'optimism-sepolia',
+  1: "ethereum",
+  10: "optimism",
+  42161: "arbitrum",
+  8453: "base",
+  11155111: "sepolia",
+  11155420: "optimism-sepolia",
 };
 
 // ─── Resolve endpoint / bundler for a chain ─────────────────────────
@@ -90,37 +94,46 @@ interface ChainMeta {
 const CHAIN_META: ChainMeta[] = [
   {
     id: 1,
-    name: 'Ethereum',
-    nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
-    blockExplorer: 'https://etherscan.io',
+    name: "Ethereum",
+    nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
+    blockExplorer: "https://etherscan.io",
   },
   {
     id: 10,
-    name: 'Optimism',
-    nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
-    blockExplorer: 'https://optimistic.etherscan.io',
+    name: "Optimism",
+    nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
+    blockExplorer: "https://optimistic.etherscan.io",
   },
   {
     id: 42161,
-    name: 'Arbitrum One',
-    nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
-    blockExplorer: 'https://arbiscan.io',
+    name: "Arbitrum One",
+    nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
+    blockExplorer: "https://arbiscan.io",
+  },
+  {
+    id: 8453,
+    name: "Base",
+    nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
+    blockExplorer: "https://basescan.org",
   },
   {
     id: 11155111,
-    name: 'Sepolia',
-    nativeCurrency: { name: 'Sepolia ETH', symbol: 'ETH', decimals: 18 },
-    blockExplorer: 'https://sepolia.etherscan.io',
+    name: "Sepolia",
+    nativeCurrency: { name: "Sepolia ETH", symbol: "ETH", decimals: 18 },
+    blockExplorer: "https://sepolia.etherscan.io",
   },
   {
     id: 11155420,
-    name: 'Optimism Sepolia',
-    nativeCurrency: { name: 'Sepolia ETH', symbol: 'ETH', decimals: 18 },
-    blockExplorer: 'https://sepolia-optimism.etherscan.io',
+    name: "Optimism Sepolia",
+    nativeCurrency: { name: "Sepolia ETH", symbol: "ETH", decimals: 18 },
+    blockExplorer: "https://sepolia-optimism.etherscan.io",
   },
 ];
 
-export function buildChains(alchemyKey?: string, pimlicoKey?: string): ChainConfig[] {
+export function buildChains(
+  alchemyKey?: string,
+  pimlicoKey?: string,
+): ChainConfig[] {
   return CHAIN_META.map((meta) => ({
     ...meta,
     endpoint: resolveEndpoint(meta.id, alchemyKey),
@@ -131,18 +144,18 @@ export function buildChains(alchemyKey?: string, pimlicoKey?: string): ChainConf
 // ─── GraphQL ────────────────────────────────────────────────────────
 
 const GRAPHQL_ENDPOINTS: Record<string, string> = {
-  development: 'https://api-dev.soulwallet.io/elytroapi/graphql/',
-  production: 'https://api.soulwallet.io/elytroapi/graphql/',
+  development: "https://api-dev.soulwallet.io/elytroapi/graphql/",
+  production: "https://api.soulwallet.io/elytroapi/graphql/",
 };
 
 // ─── Default config ─────────────────────────────────────────────────
 
 export function getDefaultConfig(): CliConfig {
-  const env = process.env.ELYTRO_ENV ?? 'production';
+  const env = process.env.ELYTRO_ENV ?? "production";
 
   return {
     currentChainId: 11155420, // Default to OP Sepolia for safety
     chains: buildChains(),
-    graphqlEndpoint: GRAPHQL_ENDPOINTS[env] ?? GRAPHQL_ENDPOINTS['development'],
+    graphqlEndpoint: GRAPHQL_ENDPOINTS[env] ?? GRAPHQL_ENDPOINTS["development"],
   };
 }
