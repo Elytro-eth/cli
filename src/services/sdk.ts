@@ -1,7 +1,14 @@
 import type { Address, Hex } from 'viem';
-import { padHex, createPublicClient, http, toHex, parseEther } from 'viem';
-import type { ChainConfig, ElytroUserOperation } from '../types';
-import { ElytroWallet, Bundler, type UserOperation } from '@elytro/sdk';
+import {
+  padHex, createPublicClient, http, toHex, parseEther,
+  zeroHash, encodeAbiParameters, parseAbiParameters, parseAbiItem,
+  decodeAbiParameters, hashTypedData, keccak256,
+} from 'viem';
+import type { ChainConfig, ElytroUserOperation, RecoveryContactsInfo } from '../types';
+import { ElytroWallet, Bundler, SocialRecovery, type UserOperation } from '@elytro/sdk';
+import { ABI_SocialRecoveryModule } from '@elytro/abi';
+import { getLogsResilient } from '../utils/getLogs';
+import { INFO_RECORDER_ADDRESS, GUARDIAN_INFO_KEY, ABI_RECOVERY_INFO_RECORDER } from '../constants/recovery';
 
 /**
  * SDKService — @elytro/sdk wrapper for ERC-4337 operations.
@@ -30,10 +37,10 @@ const ENTRYPOINT_CONFIGS: Record<string, SDKContractConfig> = {
     elytroWalletLogic: '0x186b91aE45dd22dEF329BF6b4233cf910E157C84',
   },
   'v0.8': {
-    entryPoint: '0x4337084d9e255ff0702461cf8895ce9e3b5ff108',
+    entryPoint: '0x4337084D9E255Ff0702461CF8895CE9E3b5Ff108',
     factory: '0x82a8B1a5986f565a1546672e8939daA1b20F441E',
     fallback: '0xB73Ec2FD0189202F6C22067Eeb19EAad25CAB551',
-    recovery: '0xAFEF5D8Fb7b4650B1724a23e40633f720813c731',
+    recovery: '0xAFEF5D8Fb7B4650B1724a23e40633f720813c731',
     validator: '0xea50a2874df3eEC9E0365425ba948989cd63FED6',
     elytroWalletLogic: '0x2CC8A41e26dAC15F1D11F333f74D0451be6caE36',
   },
@@ -444,6 +451,264 @@ export class SDKService {
     }
 
     throw new Error(`UserOperation receipt not found after ${maxAttempts} attempts (~90s). Hash: ${opHash}`);
+  }
+
+  // ─── Social Recovery ───────────────────────────────────────────
+
+  /**
+   * Calculate guardian hash from contact addresses and threshold.
+   * Uses SocialRecovery.calcGuardianHash with zeroHash salt.
+   */
+  calculateGuardianHash(contacts: string[], threshold: number): Hex {
+    return SocialRecovery.calcGuardianHash(contacts, threshold, zeroHash) as Hex;
+  }
+
+  /**
+   * Read on-chain recovery info (guardian hash, nonce, delay period).
+   */
+  async getRecoveryInfo(
+    walletAddress: Address,
+    chainConfig: ChainConfig
+  ): Promise<{ contactsHash: Hex; nonce: bigint; delayPeriod: bigint } | null> {
+    const client = createPublicClient({ transport: http(chainConfig.endpoint) });
+    try {
+      const result = await client.readContract({
+        address: this.contractConfig.recovery as Address,
+        abi: ABI_SocialRecoveryModule,
+        functionName: 'getSocialRecoveryInfo',
+        args: [walletAddress],
+      });
+      const [contactsHash, nonce, delayPeriod] = result as [Hex, bigint, bigint];
+      return { contactsHash, nonce, delayPeriod };
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Read the wallet's recovery nonce from the SocialRecoveryModule.
+   */
+  async getRecoveryNonce(walletAddress: Address, chainConfig: ChainConfig): Promise<bigint> {
+    const client = createPublicClient({ transport: http(chainConfig.endpoint) });
+    try {
+      const result = await client.readContract({
+        address: this.contractConfig.recovery as Address,
+        abi: ABI_SocialRecoveryModule,
+        functionName: 'walletNonce',
+        args: [walletAddress],
+      });
+      return result as bigint;
+    } catch {
+      return 0n;
+    }
+  }
+
+  /**
+   * Query guardian contacts from InfoRecorder event logs.
+   * Reads latestRecordAt to get the block, then fetches the DataRecorded event.
+   */
+  async queryRecoveryContacts(
+    walletAddress: Address,
+    chainConfig: ChainConfig
+  ): Promise<RecoveryContactsInfo | null> {
+    const client = createPublicClient({ transport: http(chainConfig.endpoint) });
+
+    // Get the block where the latest record was written
+    let startBlock: bigint;
+    try {
+      const blockNum = await client.readContract({
+        address: INFO_RECORDER_ADDRESS,
+        abi: ABI_RECOVERY_INFO_RECORDER,
+        functionName: 'latestRecordAt',
+        args: [walletAddress, GUARDIAN_INFO_KEY],
+      });
+      startBlock = blockNum as bigint;
+    } catch {
+      return null;
+    }
+
+    if (startBlock === 0n) return null;
+
+    // Fetch DataRecorded event near that block
+    const logs = await getLogsResilient(client, {
+      address: INFO_RECORDER_ADDRESS,
+      event: parseAbiItem(
+        'event DataRecorded(address indexed wallet, bytes32 indexed category, bytes data)'
+      ),
+      args: { wallet: walletAddress, category: GUARDIAN_INFO_KEY } as any,
+      fromBlock: startBlock,
+      toBlock: startBlock + 10n,
+    });
+
+    if (!logs || logs.length === 0) return null;
+
+    // Decode the latest log
+    const latestLog = logs[logs.length - 1];
+    const data = latestLog.args?.data as Hex;
+    if (!data) return null;
+
+    try {
+      const [contacts, threshold] = decodeAbiParameters(
+        parseAbiParameters('address[], uint256, bytes32'),
+        data
+      );
+      return {
+        contacts: contacts as Address[],
+        threshold: Number(threshold),
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Compute the on-chain recovery operation ID (recoveryId).
+   * keccak256(abi.encode(wallet, nonce, newOwners, chainId))
+   */
+  getRecoveryOnchainID(
+    walletAddress: Address,
+    nonce: bigint,
+    newOwners: Address[],
+    chainId: number
+  ): Hex {
+    const encoded = encodeAbiParameters(
+      parseAbiParameters('address, uint256, address[], uint256'),
+      [walletAddress, nonce, newOwners, BigInt(chainId)]
+    );
+    return keccak256(encoded);
+  }
+
+  /**
+   * Generate the EIP-712 typed data hash for guardian approval.
+   * Mirrors extension's generateRecoveryApproveHash.
+   */
+  generateRecoveryApproveHash(
+    walletAddress: Address,
+    nonce: bigint,
+    newOwners: Address[],
+    chainId: number
+  ): Hex {
+    return hashTypedData({
+      domain: {
+        name: 'SocialRecovery',
+        version: '1',
+        chainId,
+        verifyingContract: this.contractConfig.recovery as Address,
+      },
+      types: {
+        SocialRecovery: [
+          { name: 'wallet', type: 'address' },
+          { name: 'nonce', type: 'uint256' },
+          { name: 'newOwners', type: 'address[]' },
+        ],
+      },
+      primaryType: 'SocialRecovery',
+      message: { wallet: walletAddress, nonce, newOwners },
+    });
+  }
+
+  /**
+   * Check whether a guardian has signed the approve hash.
+   * Queries ApproveHash events from the SocialRecoveryModule.
+   */
+  async checkIsGuardianSigned(
+    guardian: Address,
+    fromBlock: bigint,
+    approveHash: Hex,
+    chainConfig: ChainConfig
+  ): Promise<boolean> {
+    const client = createPublicClient({ transport: http(chainConfig.endpoint) });
+    try {
+      const logs = await getLogsResilient(client, {
+        address: this.contractConfig.recovery as Address,
+        event: parseAbiItem(
+          'event ApproveHash(address indexed guardian, bytes32 indexed hash)'
+        ),
+        args: { guardian, hash: approveHash } as any,
+        fromBlock,
+      });
+      return logs.length > 0;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Read the operation state from SocialRecoveryModule.
+   * Returns 0=unknown, 1=pending, 2=ready.
+   */
+  async getOperationState(
+    walletAddress: Address,
+    recoveryId: Hex,
+    chainConfig: ChainConfig
+  ): Promise<number> {
+    const client = createPublicClient({ transport: http(chainConfig.endpoint) });
+    try {
+      const result = await client.readContract({
+        address: this.contractConfig.recovery as Address,
+        abi: ABI_SocialRecoveryModule,
+        functionName: 'getOperationState',
+        args: [walletAddress, recoveryId],
+      });
+      return Number(result);
+    } catch {
+      return 0;
+    }
+  }
+
+  /**
+   * Read the valid time for a scheduled recovery operation.
+   * Returns unix timestamp after which the operation can be executed.
+   */
+  async getOperationValidTime(
+    walletAddress: Address,
+    recoveryId: Hex,
+    chainConfig: ChainConfig
+  ): Promise<bigint> {
+    const client = createPublicClient({ transport: http(chainConfig.endpoint) });
+    try {
+      const result = await client.readContract({
+        address: this.contractConfig.recovery as Address,
+        abi: ABI_SocialRecoveryModule,
+        functionName: 'getOperationValidTime',
+        args: [walletAddress, recoveryId],
+      });
+      return result as bigint;
+    } catch {
+      return 0n;
+    }
+  }
+
+  /**
+   * Check whether an EOA address is the controller of a wallet.
+   * Calls isOwner(bytes32) on the wallet contract with the padded EOA address.
+   */
+  async checkIsOwner(
+    walletAddress: Address,
+    ownerAddress: Address,
+    chainConfig: ChainConfig
+  ): Promise<boolean> {
+    const client = createPublicClient({ transport: http(chainConfig.endpoint) });
+    try {
+      const ownerBytes32 = padHex(ownerAddress, { size: 32 });
+      const result = await client.readContract({
+        address: walletAddress,
+        abi: [
+          {
+            type: 'function',
+            name: 'isOwner',
+            inputs: [{ name: 'owner', type: 'bytes32' }],
+            outputs: [{ type: 'bool' }],
+            stateMutability: 'view',
+          },
+        ] as const,
+        functionName: 'isOwner',
+        args: [ownerBytes32],
+      });
+      return result as boolean;
+    } catch {
+      return false;
+    }
   }
 
   // ─── Accessors ─────────────────────────────────────────────────

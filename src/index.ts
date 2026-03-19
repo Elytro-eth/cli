@@ -7,6 +7,8 @@ import { registerQueryCommand } from "./commands/query";
 import { registerSecurityCommand } from "./commands/security";
 import { registerConfigCommand } from "./commands/config";
 import { registerUpdateCommand } from "./commands/update";
+import { registerRecoveryCommand } from "./commands/recovery";
+import { handlePrune } from "./commands/prune";
 import { outputError, sanitizeErrorMessage } from "./utils/display";
 import { VERSION } from "./version";
 
@@ -32,6 +34,14 @@ program
   );
 
 async function main(): Promise<void> {
+  // SECRET COMMAND: prune — not registered with Commander, invisible to --help.
+  // Bypasses context creation so it works even when the keyring or vault key
+  // is missing/corrupted. For internal testing and emergency reset only.
+  if (process.argv[2] === 'prune') {
+    await handlePrune(process.argv.includes('--force'));
+    return;
+  }
+
   let ctx: Awaited<ReturnType<typeof createAppContext>> | null = null;
   try {
     ctx = await createAppContext();
@@ -43,9 +53,9 @@ async function main(): Promise<void> {
     registerSecurityCommand(program, ctx);
     registerConfigCommand(program, ctx);
     registerUpdateCommand(program);
+    registerRecoveryCommand(program, ctx);
 
     // Phase 4: registerCallCommand(program, ctx);
-    // Phase 4: registerRecoveryCommand(program, ctx);
 
     await program.parseAsync(process.argv);
   } catch (err) {

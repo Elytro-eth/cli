@@ -1,5 +1,5 @@
 import { FileStore } from './storage';
-import { KeyringService, ChainService, SDKService, WalletClientService, AccountService } from './services';
+import { KeyringService, ChainService, SDKService, WalletClientService, AccountService, RecoveryService } from './services';
 import { resolveProvider } from './providers';
 import type { SecretProvider } from './providers';
 
@@ -17,6 +17,7 @@ export interface AppContext {
   sdk: SDKService;
   walletClient: WalletClientService;
   account: AccountService;
+  recovery: RecoveryService;
   /**
    * The resolved provider for storing/loading the vault key.
    * null if no provider was available at boot (init not yet run, or unsupported platform).
@@ -109,7 +110,9 @@ export async function createAppContext(): Promise<AppContext> {
     }
   }
 
-  return { store, keyring, chain, sdk, walletClient, account, secretProvider: loadProvider };
+  const recovery = new RecoveryService({ store, sdk, chain, account, keyring, walletClient });
+
+  return { store, keyring, chain, sdk, walletClient, account, recovery, secretProvider: loadProvider };
 }
 
 /** Platform-specific hint when no secret provider is available. */

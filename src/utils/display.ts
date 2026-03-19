@@ -116,8 +116,15 @@ export function sanitizeErrorMessage(message: string): string {
  * All commands MUST use this for their success output so that
  * callers (MCP, scripts, OpenClaw) can parse results uniformly.
  */
-export function outputResult(result: Record<string, unknown>): void {
-  console.log(JSON.stringify({ success: true, result }, null, 2));
+export function outputResult(
+  result: Record<string, unknown>,
+  suggestion?: Array<{ action: string; description: string }>
+): void {
+  const output: Record<string, unknown> = { success: true, result };
+  if (suggestion && suggestion.length > 0) {
+    output.suggestion = suggestion;
+  }
+  console.log(JSON.stringify(output, null, 2));
 }
 
 /**

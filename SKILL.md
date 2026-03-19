@@ -9,7 +9,7 @@ description: >
   counterfactual deployment, social recovery, and guardian management.
   For token swaps, combine this skill with `defi/uniswap` for planning and `defi/elytro` for execution.
   For programmatic consumption by agents and MCP integrations.
-version: 0.5.2
+version: 0.6.0
 homepage: https://elytro.com
 metadata:
   openclaw:
@@ -124,6 +124,30 @@ After activation, include `hookInstalled` status and flag any pending security s
 
 If any check fails, replace ✅ with ❌ and add a one-line remediation hint.
 
+**Recovery initiated:**
+
+```
+🔁 Recovery started for 0xWallet…1234 on Optimism.
+  Guardians: Alice (unsigned), Bob (unsigned), Carol (unsigned) — need 2 of 3
+  Share this link with your guardians:
+  https://recovery.elytro.com/?id=...
+```
+
+**Recovery status:**
+
+```
+⏳ Recovery in progress — 1 of 2 required signatures collected.
+  Alice ✅  |  Bob ⬜  |  Carol ⬜
+  Share the recovery URL with remaining guardians.
+```
+
+Once `status` is `SIGNATURE_COMPLETED`:
+
+```
+✅ All required signatures collected. Recovery can now be executed.
+  Open the Recovery App with a different wallet: https://recovery.elytro.com/?id=...
+```
+
 **Errors:**
 
 ```
@@ -165,13 +189,22 @@ concrete next step.
                         security email bind + spending-limit
                                     ▼
                                PROTECTED  ← safe to transact
+                                    │
+                  (if access lost) recovery initiate + guardians sign
+                                    ▼
+                               RECOVERING  ← write ops blocked
+                                    │
+                              recovery completes on-chain
+                                    ▼
+                               PROTECTED (new controller)
 ```
 
-| State     | How to verify                                                                         | Safe to transact? |
-| --------- | ------------------------------------------------------------------------------------- | :---------------: |
-| CREATED   | `account info` → `deployed: false`                                                    |        No         |
-| DEPLOYED  | `account info` → `deployed: true`; `security status` → `emailVerified: false`         |        No         |
-| PROTECTED | `security status` → `hookInstalled: true`, `emailVerified: true`, `dailyLimitUsd` set |      **Yes**      |
+| State      | How to verify                                                                         | Safe to transact? |
+| ---------- | ------------------------------------------------------------------------------------- | :---------------: |
+| CREATED    | `account info` → `deployed: false`                                                    |        No         |
+| DEPLOYED   | `account info` → `deployed: true`; `security status` → `emailVerified: false`         |        No         |
+| PROTECTED  | `security status` → `hookInstalled: true`, `emailVerified: true`, `dailyLimitUsd` set |      **Yes**      |
+| RECOVERING | `account list` → `recovery` field present; write ops return error `-32023`            |        No         |
 
 `account info` shows local + on-chain state. `security status` shows the full security profile (email, spending limit) from the backend.
 
@@ -385,6 +418,109 @@ elytro security spending-limit <usd>     # Set (INTERACTIVE — requires OTP)
 
 Registers the daily limit with the backend. The `--daily-limit` from create is a local intent only — this command applies it via OTP.
 
+### Recovery Commands
+
+Social recovery lets trusted guardians restore wallet control when the signing device is lost. Recovery is purely off-chain until guardians approve — no transactions from the recovering device are needed.
+
+**Key concepts:**
+- **Contacts (guardians)**: trusted addresses that can approve recovery. Set while you still have access.
+- **Threshold**: minimum approvals required to complete recovery.
+- **Recovery App**: a web UI where guardians sign the approval. `recovery initiate` returns the URL.
+- **RECOVERING state**: once initiated, write operations on the wallet are blocked until recovery completes or is cancelled on-chain.
+
+#### `recovery contacts list`
+
+```bash
+elytro recovery contacts list
+```
+
+Returns `{ address, chainId, contacts: [{ address, label? }], threshold, contactsHash, nonce, delayPeriod, recoveryInfo? }`.
+
+`recoveryInfo` is present only when the account is in RECOVERING state — it contains `{ status, message }`.
+
+#### `recovery contacts set`
+
+```bash
+elytro recovery contacts set <addr1,addr2,...> --threshold <n> [--label "0xAddr=Name,..."] [--privacy]
+```
+
+Sets guardian contacts on-chain (UserOperation). Blocked if account is RECOVERING.
+
+- `--threshold`: min approvals required (1 ≤ n ≤ number of contacts)
+- `--label`: optional local display names, comma-separated `address=name` pairs
+- `--privacy`: store only the hash on-chain; omit plaintext contacts from `InfoRecorder`
+
+Returns `{ status: "contacts_set", txHash, contacts, threshold, contactsHash, privacyMode }`.
+If no change from current on-chain state: `{ status: "no_changes" }`.
+
+#### `recovery contacts clear`
+
+```bash
+elytro recovery contacts clear
+```
+
+Removes all guardian contacts (sets hash to zero). Blocked if account is RECOVERING.
+
+Returns `{ status: "contacts_cleared", txHash }`.
+
+#### `recovery backup export`
+
+```bash
+elytro recovery backup export [--output <path>]
+```
+
+Exports guardian info + local labels to JSON. Store this file securely — it is needed if the device is lost.
+
+- Without `--output`: returns `{ status: "exported", backup: { ... } }` (inline JSON)
+- With `--output <path>`: writes file, returns `{ status: "exported", path }`
+
+#### `recovery backup import`
+
+```bash
+elytro recovery backup import <file>
+```
+
+Imports guardian contacts and labels from a backup file. Does not modify on-chain state — local labels only.
+
+Returns `{ status: "imported", address, chainId, contacts, threshold }`.
+
+#### `recovery initiate`
+
+```bash
+elytro recovery initiate <wallet-address> [--chain-id <n>] [--from-backup <file>]
+```
+
+Generates a Recovery App URL. Share this URL with guardians — they open it and sign the approval. No transaction is sent from the recovering device.
+
+- `--chain-id`: target chain (default: current chain)
+- `--from-backup`: load guardian list from a backup file (required if contacts were set with `--privacy`)
+
+**Guard**: if the current device already controls the wallet, returns `{ status: "no_recovery_needed" }` immediately — no URL is generated.
+
+Returns `{ walletAddress, chainId, recoveryId, approveHash, contacts: [{ address, signed }], threshold, recoveryUrl }`.
+
+The `recoveryUrl` is the shareable link for guardians. After calling this, the wallet enters RECOVERING state — write operations will be blocked with error `-32023` until recovery completes.
+
+#### `recovery status`
+
+```bash
+elytro recovery status
+```
+
+Queries current recovery progress from the local record + on-chain state. Returns a `suggestion` array at the top level with concrete next steps based on status.
+
+Returns `{ walletAddress, status, contacts: [{ address, signed }], signedCount, threshold, recoveryUrl, validTime?, remainingSeconds? }`.
+
+**`status` values:**
+
+| Value                  | Meaning                                                         |
+| ---------------------- | --------------------------------------------------------------- |
+| `WAITING_FOR_SIGNATURE`| Not enough guardians have signed yet                           |
+| `SIGNATURE_COMPLETED`  | Threshold reached; recovery can be executed on-chain            |
+| `RECOVERY_STARTED`     | Recovery transaction submitted, waiting for delay period        |
+| `RECOVERY_READY`       | Delay elapsed; control transfer can be finalized                |
+| `RECOVERY_COMPLETED`   | Recovery complete — wallet now controlled by the new device     |
+
 ### Configuration
 
 ```bash
@@ -414,20 +550,25 @@ Every command returns JSON to stdout:
 { "success": false, "error": { "code": -32000, "message": "...", "data": { ... } } }
 ```
 
-| Code   | Meaning              |
-| ------ | -------------------- |
-| -32000 | Internal error       |
-| -32001 | Not found            |
-| -32002 | Account not ready    |
-| -32003 | Sponsorship failed   |
-| -32004 | UserOp build failed  |
-| -32005 | Send failed          |
-| -32006 | Execution reverted   |
-| -32007 | Hook auth failed     |
-| -32010 | Email not bound      |
-| -32011 | Safety delay pending |
-| -32012 | OTP failed           |
-| -32602 | Invalid parameters   |
+| Code   | Meaning                          |
+| ------ | -------------------------------- |
+| -32000 | Internal error                   |
+| -32001 | Not found                        |
+| -32002 | Account not ready                |
+| -32003 | Sponsorship failed               |
+| -32004 | UserOp build failed              |
+| -32005 | Send failed                      |
+| -32006 | Execution reverted               |
+| -32007 | Hook auth failed                 |
+| -32010 | Email not bound                  |
+| -32011 | Safety delay pending             |
+| -32012 | OTP failed                       |
+| -32021 | Recovery: invalid parameters     |
+| -32022 | Recovery: no local record found  |
+| -32023 | Account is in RECOVERING state   |
+| -32602 | Invalid parameters               |
+
+When error code is `-32023`, the response includes a `context.recoveryStatus` field and a `suggestion` array with next steps. Do not attempt write operations — surface the `suggestion` to the user.
 
 ---
 
@@ -460,6 +601,50 @@ elytro account switch hot-wallet
 elytro account rename hot-wallet daily-spending
 ```
 
+### Set Up Recovery (while you have access)
+
+Do this before losing device access. Must be done on a PROTECTED account.
+
+```bash
+# 1. Set guardians
+elytro recovery contacts set 0xGuardian1,0xGuardian2,0xGuardian3 \
+  --threshold 2 \
+  --label "0xGuardian1=Alice,0xGuardian2=Bob,0xGuardian3=Carol"
+
+# 2. Export backup — store securely (needed if device is lost)
+elytro recovery backup export --output ./elytro-recovery-backup.json
+
+# 3. Verify on-chain
+elytro recovery contacts list
+# → contacts: [...], threshold: 2, contactsHash: 0x...
+```
+
+### Initiate Recovery (after losing access)
+
+Run this on the **new device** that should take control.
+
+```bash
+# 1. Initialize keyring on new device
+elytro init
+
+# 2. Initiate — generates Recovery App URL
+elytro recovery initiate 0xWalletAddress [--from-backup ./backup.json]
+# → recoveryUrl: https://recovery.elytro.com/?...
+# Share this URL with guardians
+
+# 3. Monitor guardian approvals
+elytro recovery status
+# → status: WAITING_FOR_SIGNATURE, signedCount: 1, threshold: 2
+# → suggestion: [{ action: "open https://...", description: "Share link..." }]
+
+# 4. Once SIGNATURE_COMPLETED
+# → suggestion: open Recovery App with a different wallet to submit on-chain
+
+# 5. After recovery executes on-chain
+elytro recovery status
+# → status: RECOVERY_COMPLETED
+```
+
 ### Token Swap (Uniswap)
 
 Combine `defi/uniswap` (returns calldata + route summary) with Elytro execution:
@@ -490,3 +675,7 @@ Never guess swap outputs — always surface exact minimums/routes from `defi/uni
 | "Insufficient balance"         | Value > balance            | Fund the account                      |
 | `hookInstalled: false`         | Hook batching failed       | `elytro security 2fa install`         |
 | "AA21" in error                | UserOp simulation failed   | Usually balance or nonce issue        |
+| error code `-32023`            | Account is RECOVERING      | Use `recovery status`; no writes until complete |
+| `status: no_recovery_needed`   | Device already controls wallet | No action needed                  |
+| `status: no_changes`           | Contacts already match     | No transaction sent                   |
+| error code `-32022`            | No local recovery record   | Run `recovery initiate` first         |

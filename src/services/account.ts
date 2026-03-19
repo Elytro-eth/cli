@@ -305,6 +305,22 @@ export class AccountService {
     return `account-${this.state.accounts.length + 1}`;
   }
 
+  /**
+   * Persist an in-memory account update back to disk.
+   *
+   * Used by recovery commands that mutate account fields (e.g. activeRecovery,
+   * isRecoveryEnabled) after init() has already loaded state.
+   */
+  async persistAccountUpdate(account: AccountInfo): Promise<void> {
+    const idx = this.state.accounts.findIndex(
+      (a) => a.address.toLowerCase() === account.address.toLowerCase()
+    );
+    if (idx !== -1) {
+      this.state.accounts[idx] = account;
+      await this.persist();
+    }
+  }
+
   private async persist(): Promise<void> {
     await this.store.save(STORAGE_KEY, this.state);
   }

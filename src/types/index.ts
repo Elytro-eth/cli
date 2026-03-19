@@ -27,6 +27,11 @@ export interface AccountInfo {
    * Absent = hook never installed via create→activate flow.
    */
   securityStatus?: SecurityStatus;
+  /**
+   * Active recovery state — present when a recovery has been initiated.
+   * Null = recovery was cleared/completed. Absent = never initiated.
+   */
+  activeRecovery?: ActiveRecoveryInfo | null;
 }
 
 // ─── Security Intent (temporary, create → activate) ────────────
@@ -217,6 +222,68 @@ export interface HookError {
   otpExpiresAt?: string;
   projectedSpendUsdCents?: number;
   message?: string;
+}
+
+// ─── Social Recovery ────────────────────────────────────────────────
+
+export interface RecoveryContact {
+  address: Address;
+  label?: string;
+}
+
+export interface RecoveryContactsInfo {
+  contacts: Address[];
+  threshold: number;
+}
+
+export interface RecoveryBackup {
+  address: Address;
+  chainId: number;
+  contacts: RecoveryContact[];
+  threshold: string;
+  exportedAt: string;
+}
+
+export interface LocalRecoveryRecord {
+  walletAddress: Address;
+  chainId: number;
+  newOwner: Address;
+  recoveryId: string;
+  approveHash: string;
+  contacts: RecoveryContact[];
+  threshold: number;
+  fromBlock: string;
+  recoveryUrl: string;
+}
+
+export enum RecoveryStatus {
+  WAITING_FOR_SIGNATURE = 'WAITING_FOR_SIGNATURE',
+  SIGNATURE_COMPLETED = 'SIGNATURE_COMPLETED',
+  RECOVERY_STARTED = 'RECOVERY_STARTED',
+  RECOVERY_READY = 'RECOVERY_READY',
+  RECOVERY_COMPLETED = 'RECOVERY_COMPLETED',
+}
+
+export interface RecoveryStatusResult {
+  walletAddress: Address;
+  newOwner: Address;
+  status: RecoveryStatus;
+  contacts: Array<RecoveryContact & { signed: boolean }>;
+  signedCount: number;
+  threshold: number;
+  recoveryUrl: string;
+  /** Unix timestamp — only present when RECOVERY_STARTED */
+  validTime: number | null;
+  /** Seconds remaining — only present when RECOVERY_STARTED */
+  remainingSeconds: number | null;
+}
+
+export interface ActiveRecoveryInfo {
+  status: RecoveryStatus;
+  /** Internal — the EOA that will take control after recovery */
+  newOwner: Address;
+  recoveryId: string;
+  lastCheckedAt: number;
 }
 
 // ─── Nullable helper ────────────────────────────────────────────────
