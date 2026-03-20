@@ -1,10 +1,8 @@
-import { password, confirm, select, input } from '@inquirer/prompts';
+import { password, select, input } from '@inquirer/prompts';
 
 /**
- * Interactive prompt wrappers.
- *
- * These replace the extension's ApprovalService UI popups.
- * Every destructive / on-chain action goes through a prompt.
+ * Interactive prompt wrappers (password, selection, input).
+ * High-risk CLI actions have no built-in yes/no prompt — agents must obtain user approval per `references/commands.md`.
  */
 
 export async function askPassword(message = 'Enter password'): Promise<string> {
@@ -21,10 +19,6 @@ export async function askNewPassword(): Promise<string> {
     throw new Error('Passwords do not match.');
   }
   return pwd;
-}
-
-export async function askConfirm(message: string, defaultValue = false): Promise<boolean> {
-  return confirm({ message, default: defaultValue });
 }
 
 export async function askSelect<T extends string>(message: string, choices: { name: string; value: T }[]): Promise<T> {

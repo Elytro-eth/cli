@@ -5,7 +5,6 @@ import type { Address, Hex } from 'viem';
 import type { AppContext } from '../context';
 import type { ElytroUserOperation, AccountInfo, ChainConfig } from '../types';
 import { requestSponsorship, applySponsorToUserOp } from '../utils/sponsor';
-import { askConfirm } from '../utils/prompt';
 import { sanitizeErrorMessage, outputResult, outputError, maskApiKeys } from '../utils/display';
 import { SecurityHookService, createSignMessageForAuth } from '../services/securityHook';
 import { savePendingOtpAndOutput } from '../services/pendingOtp';
@@ -312,7 +311,7 @@ export function registerTxCommand(program: Command, ctx: AppContext): void {
           txType = result.txType;
         }
 
-        // ── Confirmation prompt (interactive — summary to stderr) ──
+        // ── Summary to stderr (agents: obtain user approval before running tx send — see references/commands.md)
         const estimatedGas = userOp.callGasLimit + userOp.verificationGasLimit + userOp.preVerificationGas;
         console.error(JSON.stringify({
           summary: {
@@ -324,12 +323,6 @@ export function registerTxCommand(program: Command, ctx: AppContext): void {
             estimatedGas: estimatedGas.toString(),
           },
         }, null, 2));
-
-        const confirmed = await askConfirm('Sign and send this transaction?');
-        if (!confirmed) {
-          outputResult({ status: 'cancelled' });
-          return;
-        }
 
         // ── Sign + Send + Wait ──
         const spinner = ora('Signing UserOperation...').start();

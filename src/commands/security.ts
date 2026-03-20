@@ -19,8 +19,7 @@ import { encodeInstallHook, encodeUninstallHook, encodeForcePreUninstall } from 
 import { savePendingOtpAndOutput, generateOtpId } from '../services/pendingOtp';
 import { serializeUserOpForPending } from '../utils/userOpSerialization';
 import type { StorageAdapter } from '../types';
-import { askConfirm } from '../utils/prompt';
-import { address as shortAddr, sanitizeErrorMessage, outputResult, outputError } from '../utils/display';
+import { sanitizeErrorMessage, outputResult, outputError } from '../utils/display';
 
 // ─── Error Codes ──────────────────────────────────────────────────────
 
@@ -447,17 +446,6 @@ export function registerSecurityCommand(program: Command, ctx: AppContext): void
           throw new SecurityError(ERR_INTERNAL, 'Invalid capability flags. Use 1, 2, or 3.');
         }
 
-        // Show install details (interactive confirmation follows)
-
-        const confirmed = await askConfirm(
-          `Install SecurityHook on ${account.alias} (${shortAddr(account.address)})? ` +
-          `Capability: ${CAPABILITY_LABELS[capabilityFlags]}, Safety Delay: ${DEFAULT_SAFETY_DELAY}s`
-        );
-        if (!confirmed) {
-          outputResult({ status: 'cancelled' });
-          return;
-        }
-
         const installTx = encodeInstallHook(account.address, hookAddress, DEFAULT_SAFETY_DELAY, capabilityFlags);
         const buildSpinner = ora('Building UserOp...').start();
         try {
@@ -640,12 +628,6 @@ async function handleForceExecute(
     );
   }
 
-  const confirmed = await askConfirm(`Execute force uninstall on ${account.alias} (${shortAddr(account.address)})? This will remove the SecurityHook.`);
-  if (!confirmed) {
-    outputResult({ status: 'cancelled' });
-    return;
-  }
-
   const uninstallTx = encodeUninstallHook(account.address, currentStatus.hookAddress);
   const spinner = ora('Executing force uninstall...').start();
   try {
@@ -677,15 +659,6 @@ async function handleForceStart(
     return;
   }
 
-  const confirmed = await askConfirm(
-    `Start force-uninstall countdown on ${account.alias} (${shortAddr(account.address)})? ` +
-    `You must wait ${DEFAULT_SAFETY_DELAY}s before executing.`
-  );
-  if (!confirmed) {
-    outputResult({ status: 'cancelled' });
-    return;
-  }
-
   const preUninstallTx = encodeForcePreUninstall(hookAddress);
   const spinner = ora('Starting force-uninstall countdown...').start();
   try {
@@ -710,12 +683,6 @@ async function handleNormalUninstall(
   hookService: SecurityHookService,
   hookAddress: Address
 ): Promise<void> {
-  const confirmed = await askConfirm(`Uninstall SecurityHook from ${account.alias} (${shortAddr(account.address)})? (requires 2FA approval)`);
-  if (!confirmed) {
-    outputResult({ status: 'cancelled' });
-    return;
-  }
-
   const uninstallTx = encodeUninstallHook(account.address, hookAddress);
   const spinner = ora('Building UserOp...').start();
   try {
