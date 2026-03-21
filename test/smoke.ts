@@ -13,6 +13,7 @@
  */
 
 import { strict as assert } from 'node:assert';
+import type { Hex } from 'viem';
 import { rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -21,6 +22,13 @@ import { webcrypto } from 'node:crypto';
 import { FileStore } from '../src/storage';
 import { KeyringService, ChainService, SDKService, WalletClientService, AccountService } from '../src/services';
 import { KeychainProvider, EnvVarProvider } from '../src/providers';
+import { X402Service } from '../src/services/x402';
+import {
+  getDomainSeparator,
+  getEncoded1271MessageHash,
+  getEncodedSHA,
+} from '../src/services/securityHook';
+import { X402_HEADERS, X402_VERSION, EXACT_ASSET_TRANSFER_METHODS, toCaip2 } from '../src/constants/x402';
 
 const TEST_DIR = join(tmpdir(), `.elytro-test-${Date.now()}`);
 
@@ -116,9 +124,10 @@ async function main() {
   }
 
   try {
-    // EnvVarProvider should be available when env var is set
+    // EnvVarProvider should be available when env var + opt-in are set
     const testKey = generateVaultKey();
     process.env.ELYTRO_VAULT_SECRET = Buffer.from(testKey).toString('base64');
+    process.env.ELYTRO_ALLOW_ENV = '1';
     const envProvider = new EnvVarProvider();
     const available = await envProvider.available();
     assert.equal(available, true);
@@ -129,6 +138,7 @@ async function main() {
     assert.ok(loaded);
     assert.deepEqual(loaded, testKey);
     assert.equal(process.env.ELYTRO_VAULT_SECRET, undefined);
+    assert.equal(process.env.ELYTRO_ALLOW_ENV, undefined);
     ok('EnvVarProvider load() consumes env var');
   } catch (e) {
     fail('EnvVarProvider load', e);
@@ -649,7 +659,211 @@ async function main() {
     fail('userop serialize', e);
   }
 
-  // ─── 19. Tx order preservation ──────────────────────────────────
+  // ─── 19. Delegation storage + x402 service ─────────────────────
+  console.log('[x402]');
+  try {
+    const delegation = await account.addDelegation('alpha-wolf', {
+      id: 'test-delegation',
+      manager: '0x000000000000000000000000000000000000dEaD',
+      token: '0x000000000000000000000000000000000000bEEF',
+      payee: '0x000000000000000000000000000000000000b0b0',
+      amount: '1000',
+      permissionContext: '0xabc123',
+    });
+
+    const paymentRequired = {
+      x402Version: X402_VERSION,
+      resource: { url: 'https://example.com/paywall' },
+      accepts: [
+        {
+          scheme: 'exact',
+          network: toCaip2(chainId),
+          amount: '1000',
+          asset: delegation.token,
+          payTo: delegation.payee,
+          maxTimeoutSeconds: 60,
+          extra: {
+            assetTransferMethod: EXACT_ASSET_TRANSFER_METHODS.ERC7710,
+            delegationManager: delegation.manager,
+          },
+        },
+      ],
+    };
+
+    const settlement = {
+      success: true,
+      transaction: '0x123',
+      network: 'base',
+    };
+
+    const firstResponse = new Response('payment required', {
+      status: 402,
+      headers: {
+        [X402_HEADERS.PAYMENT_REQUIRED]: Buffer.from(JSON.stringify(paymentRequired)).toString('base64'),
+      },
+    });
+
+    const secondResponse = new Response('ok', {
+      status: 200,
+      headers: {
+        [X402_HEADERS.PAYMENT_RESPONSE]: Buffer.from(JSON.stringify(settlement)).toString('base64'),
+      },
+    });
+
+    let callCount = 0;
+    const originalFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = (async () => {
+        callCount++;
+        return callCount === 1 ? firstResponse : secondResponse;
+      }) as typeof fetch;
+
+      const x402 = new X402Service({ account, keyring, sdk });
+      const result = await x402.performRequest({
+        url: 'https://example.com/paywall',
+        method: 'GET',
+        headers: {},
+        account: 'alpha-wolf',
+      });
+
+      assert.equal(result.type, 'paid');
+      assert.equal(result.payment?.delegationId, delegation.id);
+      assert.equal(result.payment?.settlement?.success, true);
+      ok('x402 paid flow');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  } catch (e) {
+    fail('x402 paid flow', e);
+  }
+
+  console.log('[x402 eip3009]');
+  try {
+    const paymentRequired = {
+      x402Version: X402_VERSION,
+      resource: { url: 'https://example.com/paywall-eip3009' },
+      accepts: [
+        {
+          scheme: 'exact',
+          network: toCaip2(chainId),
+          amount: '5000',
+          asset: '0x000000000000000000000000000000000000bEEF',
+          payTo: '0x000000000000000000000000000000000000c0de',
+          maxTimeoutSeconds: 120,
+          extra: {
+            name: 'USDC',
+            version: '2',
+          },
+        },
+      ],
+    };
+
+    const firstResponse = new Response('payment required', {
+      status: 402,
+      headers: {
+        [X402_HEADERS.PAYMENT_REQUIRED]: Buffer.from(JSON.stringify(paymentRequired)).toString('base64'),
+      },
+    });
+
+    const secondResponse = new Response('ok', {
+      status: 200,
+      headers: {
+        [X402_HEADERS.PAYMENT_RESPONSE]: Buffer.from(
+          JSON.stringify({
+            success: true,
+            transaction: '0x456',
+            network: toCaip2(chainId),
+          })
+        ).toString('base64'),
+      },
+    });
+
+    let callCount = 0;
+    const originalFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = (async () => {
+        callCount++;
+        return callCount === 1 ? firstResponse : secondResponse;
+      }) as typeof fetch;
+
+      const x402 = new X402Service({ account, keyring, sdk });
+      const result = await x402.performRequest({
+        url: 'https://example.com/paywall-eip3009',
+        method: 'POST',
+        headers: {},
+        body: JSON.stringify({ data: 'test' }),
+        account: 'alpha-wolf',
+      });
+
+      assert.equal(result.type, 'paid');
+      assert.equal(result.payment?.authorization?.nonce.startsWith('0x'), true);
+      ok('x402 paid flow (eip3009)');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  } catch (e) {
+    fail('x402 paid flow (eip3009)', e);
+  }
+
+  console.log('[x402 body fallback]');
+  try {
+    const paymentRequired = {
+      x402Version: 1,
+      error: 'Payment required',
+      resource: { url: 'https://example.com/body-only' },
+      accepts: [
+        {
+          scheme: 'exact',
+          network: toCaip2(chainId),
+          amount: '2500',
+          asset: '0x000000000000000000000000000000000000bEEF',
+          payTo: '0x000000000000000000000000000000000000c0de',
+          maxTimeoutSeconds: 60,
+          extra: {
+            name: 'USDC',
+            version: '2',
+          },
+        },
+      ],
+    };
+
+    const firstResponse = new Response(JSON.stringify(paymentRequired), {
+      status: 402,
+      headers: {
+        'Content-Type': 'application/json',
+      },
+    });
+
+    const secondResponse = new Response('ok', {
+      status: 200,
+    });
+
+    let callCount = 0;
+    const originalFetch = globalThis.fetch;
+    try {
+      globalThis.fetch = (async () => {
+        callCount++;
+        return callCount === 1 ? firstResponse : secondResponse;
+      }) as typeof fetch;
+
+      const x402 = new X402Service({ account, keyring, sdk });
+      const result = await x402.performRequest({
+        url: 'https://example.com/body-only',
+        method: 'GET',
+        headers: {},
+        account: 'alpha-wolf',
+      });
+
+      assert.equal(result.payment?.method, EXACT_ASSET_TRANSFER_METHODS.EIP3009);
+      ok('x402 body fallback');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  } catch (e) {
+    fail('x402 body fallback', e);
+  }
+
+  // ─── 20. Tx order preservation ──────────────────────────────────
   console.log('[tx order]');
   try {
     const specs = [
@@ -712,6 +926,32 @@ async function main() {
     ok('lock clears vault from memory');
   } catch (e) {
     fail('key zeroing', e);
+  }
+
+  // ─── 22. ERC-1271 signing ──────────────────────────────────────
+  console.log('[erc1271]');
+  try {
+    const { keccak256, toBytes } = await import('viem');
+    const walletAddress = account.currentAccount?.address;
+    assert.ok(walletAddress);
+
+    const helloHash = keccak256(toBytes('hello world'));
+    const chainIdHex = `0x${chainId.toString(16)}` as Hex;
+    const encoded1271Hash = getEncoded1271MessageHash(helloHash);
+    const domainSeparator = getDomainSeparator(chainIdHex, walletAddress.toLowerCase() as Hex);
+    const finalHash = getEncodedSHA(domainSeparator, encoded1271Hash);
+
+    const { packedHash, validationData } = await sdk.packRawHash(finalHash);
+    const rawSignature = await keyring.signDigest(packedHash);
+    const packedSignature = await sdk.packUserOpSignature(rawSignature, validationData);
+    console.log('wallet address', walletAddress);
+    console.log('chain id', chainId);
+    console.log('erc1271.finalHash', finalHash);
+    console.log('erc1271.signature', packedSignature);
+    assert.ok(packedSignature.startsWith('0x'));
+    ok('erc1271 signature generated');
+  } catch (e) {
+    fail('erc1271 signature', e);
   }
 
   // ─── Cleanup ──────────────────────────────────────────────────

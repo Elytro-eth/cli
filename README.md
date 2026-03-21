@@ -38,6 +38,7 @@ elytro query balance
 - **SecurityHook (2FA)** — Install on-chain 2FA with email OTP and daily spending limits
 - **Deferred OTP** — Commands that require OTP exit immediately after sending the code; complete later with `elytro otp submit <id> <code>`
 - **Self-updating** — `elytro update` detects your package manager and upgrades in place
+- **x402 payments** — Pay HTTP 402 endpoints directly from your smart account via ERC-7710 delegations or EIP-3009 authorizations (see [docs/x402.md](docs/x402.md))
 
 ## Supported Chains
 
@@ -98,6 +99,12 @@ elytro account activate [alias|address]   # Deploy to chain
 elytro tx send --tx "to:0xAddr,value:0.1" [--tx ...]
 elytro tx build --tx "to:0xAddr,data:0xab..."
 elytro tx simulate --tx "to:0xAddr,value:0.1"
+
+# x402 Payments
+elytro delegation list|add|show|remove
+elytro request [--dry-run] <url> [--method POST --json '{"foo":"bar"}']
+
+See [docs/x402.md](docs/x402.md) for the full workflow (delegation setup, dry runs, settlement output).
 
 # Queries
 elytro query balance [account] [--token erc20Addr]

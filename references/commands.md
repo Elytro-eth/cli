@@ -52,13 +52,21 @@
 | `config show|set|remove` | “Settings updated” or “key removed—RPC may use defaults.” |
 | `update check` / `update` | Update available vs upgraded; no auto-update without OK. |
 
+### x402 / Delegations
+
+| Run | Tell the user |
+|-----|---------------|
+| `delegation list|add|show|remove [--account alias]` | “Delegations listed / stored / removed.” Mention manager + token when relevant. |
+| `request --dry-run <url>` | “Preview — paywall requires &lt;amount asset&gt; to &lt;payTo&gt;.” No funds moved. |
+| `request <url> [--method POST --json …]` | “Paid &lt;amount asset&gt; to &lt;payTo&gt;. Tx hash from settlement header.” Only run after user approval. Mention whether it used ERC-7710 (delegation id) or EIP-3009 (authorization window). |
+
 ---
 
 ## Agent: user approval before running
 
 Say what you will run, **wait for explicit yes**, then execute.
 
-**Money & deploy:** `tx send` (especially `--no-hook`), `account activate`  
+**Money & deploy:** `tx send` (especially `--no-hook`), `account activate`, `request <url>` (non-dry-run)  
 **Security hook:** `security 2fa install`, `security 2fa uninstall` (any variant)  
 **Account safety:** `security email bind|change`, `security spending-limit` **when setting**  
 **OTP / config:** `otp submit` (user provides code), `otp cancel`, `config remove`, `update`

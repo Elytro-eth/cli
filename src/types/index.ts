@@ -27,6 +27,8 @@ export interface AccountInfo {
    * Absent = hook never installed via create→activate flow.
    */
   securityStatus?: SecurityStatus;
+  /** Stored ERC-7710 delegations for x402 payments */
+  delegations?: DelegationInfo[];
 }
 
 // ─── Security Intent (temporary, create → activate) ────────────
@@ -57,6 +59,27 @@ export interface SecurityIntent {
 export interface SecurityStatus {
   /** Whether the SecurityHook was installed during activate */
   hookInstalled: boolean;
+}
+
+// ─── Delegations (ERC-7710) ──────────────────────────────────────
+
+export interface DelegationInfo {
+  /** Local identifier for CLI reference */
+  id: string;
+  /** DelegationManager contract address */
+  manager: Address;
+  /** Token contract address this delegation covers */
+  token: Address;
+  /** Destination address locked into the delegation */
+  payee: Address;
+  /** Authorized amount in token's smallest unit (string for large ints) */
+  amount: string;
+  /** Raw permission context blob required by the manager */
+  permissionContext: string;
+  /** Optional expiration timestamp (ISO string) */
+  expiresAt?: string;
+  /** Optional human-readable note */
+  note?: string;
 }
 
 // ─── Keyring ────────────────────────────────────────────────────────
