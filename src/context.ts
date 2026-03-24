@@ -1,13 +1,13 @@
-import { FileStore } from "./storage";
+import { FileStore } from './storage';
 import {
   KeyringService,
   ChainService,
   SDKService,
   WalletClientService,
   AccountService,
-} from "./services";
-import { resolveProvider } from "./providers";
-import type { SecretProvider } from "./providers";
+} from './services';
+import { resolveProvider } from './providers';
+import type { SecretProvider } from './providers';
 
 /**
  * Application context — the service container.
@@ -63,8 +63,7 @@ export async function createAppContext(): Promise<AppContext> {
   if (isInitialized) {
     if (!loadProvider) {
       throw new Error(
-        "Wallet is initialized but no secret provider is available.\n" +
-          noProviderHint(),
+        'Wallet is initialized but no secret provider is available.\n' + noProviderHint(),
       );
     }
 
@@ -72,8 +71,8 @@ export async function createAppContext(): Promise<AppContext> {
     if (!vaultKey) {
       throw new Error(
         `Wallet is initialized but vault key not found in ${loadProvider.name}.\n` +
-          "The credential may have been deleted. Re-run `elytro init` to create a new wallet,\n" +
-          "or import a backup with `elytro import`.",
+          'The credential may have been deleted. Re-run `elytro init` to create a new wallet,\n' +
+          'or import a backup with `elytro import`.',
       );
     }
 
@@ -84,8 +83,8 @@ export async function createAppContext(): Promise<AppContext> {
       vaultKey.fill(0);
       throw new Error(
         `Wallet unlock failed: ${(err as Error).message}\n` +
-          "The vault key may not match the encrypted keyring. " +
-          "Re-run `elytro init` or import a backup.",
+          'The vault key may not match the encrypted keyring. ' +
+          'Re-run `elytro init` or import a backup.',
       );
     }
 
@@ -112,9 +111,7 @@ export async function createAppContext(): Promise<AppContext> {
   // The config default (e.g. OP Sepolia) may differ from the account's actual chain.
   const currentAccount = account.currentAccount;
   if (currentAccount) {
-    const acctInfo = account.resolveAccount(
-      currentAccount.alias ?? currentAccount.address,
-    );
+    const acctInfo = account.resolveAccount(currentAccount.alias ?? currentAccount.address);
     if (acctInfo) {
       const acctChain = chain.chains.find((c) => c.id === acctInfo.chainId);
       if (acctChain && acctChain.id !== defaultChain.id) {
@@ -138,16 +135,16 @@ export async function createAppContext(): Promise<AppContext> {
 /** Platform-specific hint when no secret provider is available. */
 function noProviderHint(): string {
   switch (process.platform) {
-    case "darwin":
-      return "macOS Keychain access failed. Check Keychain permissions or security settings.";
-    case "win32":
-      return "Windows Credential Manager access failed. Run as the same user who initialized the wallet.";
+    case 'darwin':
+      return 'macOS Keychain access failed. Check Keychain permissions or security settings.';
+    case 'win32':
+      return 'Windows Credential Manager access failed. Run as the same user who initialized the wallet.';
     default:
       return (
-        "No secret provider available. Options:\n" +
-        "  1. Install and start a Secret Service provider (GNOME Keyring or KWallet)\n" +
-        "  2. The vault key file (~/.elytro/.vault-key) may have been deleted\n" +
-        "  3. For CI: set ELYTRO_VAULT_SECRET and ELYTRO_ALLOW_ENV=1"
+        'No secret provider available. Options:\n' +
+        '  1. Check whether the OS credential store is reachable\n' +
+        '  2. Check whether the vault key file (~/.elytro/.vault-key) is writable/readable\n' +
+        '  3. Verify ~/.elytro permissions allow Elytro to access its files'
       );
   }
 }

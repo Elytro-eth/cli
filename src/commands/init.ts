@@ -3,6 +3,7 @@ import { Command } from 'commander';
 import ora from 'ora';
 import type { AppContext } from '../context';
 import { resolveProvider } from '../providers';
+import { askSelect } from '../utils/prompt';
 import { outputResult, outputError, sanitizeErrorMessage } from '../utils/display';
 
 /**
@@ -11,10 +12,8 @@ import { outputResult, outputError, sanitizeErrorMessage } from '../utils/displa
  * Generates a 256-bit vault key and an EOA signing key.
  *
  * Key storage (auto-detected):
- *   - macOS:          Keychain (via OS credential store)
- *   - Windows:        Credential Manager (via OS credential store)
- *   - Linux desktop:  Secret Service / GNOME Keyring / KWallet
- *   - Linux headless:  ~/.elytro/.vault-key (chmod 0600)
+ *   - Preferred: OS credential store
+ *   - Fallback:  ~/.elytro/.vault-key (chmod 0600)
  *
  * No password required — key management is handled by the SecretProvider.
  */
@@ -40,17 +39,34 @@ export function registerInitCommand(program: Command, ctx: AppContext): void {
         // 2. Resolve the init provider (persistent storage)
         const { initProvider } = await resolveProvider();
 
-        let providerName: string | null = null;
-        let vaultSecretB64: string | null = null;
-
-        if (initProvider) {
-          // Persistent provider available (e.g. macOS Keychain)
-          await initProvider.store(vaultKey);
-          providerName = initProvider.name;
-        } else {
-          // No persistent provider — return secret for manual storage
-          vaultSecretB64 = Buffer.from(vaultKey).toString('base64');
+        if (!initProvider) {
+          throw new Error(
+            'No secret provider is available. Elytro requires either a working OS credential store ' +
+              'or a writable vault key file at ~/.elytro/.vault-key.',
+          );
         }
+
+        if (initProvider.name === 'file-protected') {
+          spinner.stop();
+          const choice = await askSelect(
+            'OS credential storage is unavailable. Elytro can continue by storing the vault key in ~/.elytro/.vault-key with owner-only permissions. This file is less protected than the system keychain. Continue?',
+            [
+              { name: 'Continue and use ~/.elytro/.vault-key', value: 'continue' },
+              { name: 'Cancel initialization', value: 'cancel' },
+            ],
+          );
+
+          if (choice !== 'continue') {
+            vaultKey.fill(0);
+            outputError(-32000, 'Initialization cancelled. Elytro did not create a wallet.');
+            return;
+          }
+
+          spinner.start('Setting up wallet...');
+        }
+
+        await initProvider.store(vaultKey);
+        const providerName = initProvider.name;
 
         // 3. Create the encrypted vault with the new key
         await ctx.keyring.createNewOwner(vaultKey);
@@ -64,15 +80,8 @@ export function registerInitCommand(program: Command, ctx: AppContext): void {
           status: 'initialized',
           dataDir: ctx.store.dataDir,
           secretProvider: providerName,
-          ...(vaultSecretB64 ? { vaultSecret: vaultSecretB64 } : {}),
-          ...(vaultSecretB64
-            ? {
-                hint:
-                  'No persistent secret provider available. Save this vault key securely — it will NOT be shown again.\n' +
-                  'For CI: set ELYTRO_VAULT_SECRET=<key> and ELYTRO_ALLOW_ENV=1.',
-              }
-            : {}),
-          nextStep: 'Run `elytro account create --chain <chainId>` to create your first smart account.',
+          nextStep:
+            'Run `elytro account create --chain <chainId>` to create your first smart account.',
         });
       } catch (err) {
         spinner.fail('Failed to initialize wallet.');

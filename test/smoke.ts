@@ -4,7 +4,7 @@
  * Directly calls services to verify:
  *   init → create → list → info → switch → multi-account → persistence
  *   vault key: generation, encrypt/decrypt round-trip
- *   SecretProvider: KeyringProvider + EnvVarProvider availability
+ *   SecretProvider: KeyringProvider + FileProvider availability
  *   export/import: password-based backup round-trip
  *
  * Usage:
@@ -20,15 +20,26 @@ import { tmpdir } from 'node:os';
 import { webcrypto } from 'node:crypto';
 
 import { FileStore } from '../src/storage';
-import { KeyringService, ChainService, SDKService, WalletClientService, AccountService } from '../src/services';
-import { KeychainProvider, KeyringProvider, EnvVarProvider } from '../src/providers';
+import {
+  KeyringService,
+  ChainService,
+  SDKService,
+  WalletClientService,
+  AccountService,
+} from '../src/services';
+import { KeychainProvider, KeyringProvider, FileProvider } from '../src/providers';
 import { X402Service } from '../src/services/x402';
 import {
   getDomainSeparator,
   getEncoded1271MessageHash,
   getEncodedSHA,
 } from '../src/services/securityHook';
-import { X402_HEADERS, X402_VERSION, EXACT_ASSET_TRANSFER_METHODS, toCaip2 } from '../src/constants/x402';
+import {
+  X402_HEADERS,
+  X402_VERSION,
+  EXACT_ASSET_TRANSFER_METHODS,
+  toCaip2,
+} from '../src/constants/x402';
 
 const TEST_DIR = join(tmpdir(), `.elytro-test-${Date.now()}`);
 
@@ -111,44 +122,32 @@ async function main() {
   }
 
   try {
-    // EnvVarProvider should be unavailable when env var is not set
-    delete process.env.ELYTRO_VAULT_SECRET;
-    const envProvider = new EnvVarProvider();
-    const available = await envProvider.available();
-    assert.equal(available, false);
-    ok('EnvVarProvider unavailable when env var not set');
+    const fileProvider = new FileProvider(TEST_DIR);
+    const available = await fileProvider.available();
+    assert.equal(available, true);
+    ok('FileProvider available when Elytro data dir is writable');
   } catch (e) {
-    fail('EnvVarProvider unavailable', e);
+    fail('FileProvider available', e);
   }
 
   try {
-    // EnvVarProvider should be available when env var + opt-in are set
     const testKey = generateVaultKey();
-    process.env.ELYTRO_VAULT_SECRET = Buffer.from(testKey).toString('base64');
-    process.env.ELYTRO_ALLOW_ENV = '1';
-    const envProvider = new EnvVarProvider();
-    const available = await envProvider.available();
-    assert.equal(available, true);
-    ok('EnvVarProvider available when env var + ELYTRO_ALLOW_ENV=1 set');
-
-    // Load should consume-once (delete env vars)
-    const loaded = await envProvider.load();
+    const fileProvider = new FileProvider(TEST_DIR);
+    await fileProvider.store(testKey);
+    const loaded = await fileProvider.load();
     assert.ok(loaded);
     assert.deepEqual(loaded, testKey);
-    assert.equal(process.env.ELYTRO_VAULT_SECRET, undefined);
-    assert.equal(process.env.ELYTRO_ALLOW_ENV, undefined);
-    ok('EnvVarProvider load() consumes env vars');
+    ok('FileProvider store/load round-trip succeeds');
   } catch (e) {
-    fail('EnvVarProvider load', e);
+    fail('FileProvider round-trip', e);
   }
 
   try {
-    // EnvVarProvider store should throw
-    const envProvider = new EnvVarProvider();
-    await assert.rejects(() => envProvider.store(generateVaultKey()), /read-only/);
-    ok('EnvVarProvider store() rejects (read-only)');
+    const fileProvider = new FileProvider(TEST_DIR);
+    await assert.rejects(() => fileProvider.store(new Uint8Array(16)), /expected 32 bytes/);
+    ok('FileProvider rejects invalid key length');
   } catch (e) {
-    fail('EnvVarProvider store rejects', e);
+    fail('FileProvider rejects invalid length', e);
   }
 
   // ─── 3. Init ───────────────────────────────────────────────────
@@ -347,7 +346,10 @@ async function main() {
   }
 
   try {
-    await assert.rejects(() => account.markDeployed('0x0000000000000000000000000000000000000000', 999), /not found/);
+    await assert.rejects(
+      () => account.markDeployed('0x0000000000000000000000000000000000000000', 999),
+      /not found/,
+    );
     ok('markDeployed rejects unknown account');
   } catch (e) {
     fail('markDeployed unknown', e);
@@ -365,7 +367,11 @@ async function main() {
     assert.ok(secAccount.securityIntent, 'securityIntent should exist');
     assert.equal(secAccount.securityIntent!.email, 'test@example.com');
     assert.equal(secAccount.securityIntent!.dailyLimitUsd, 100);
-    assert.equal(secAccount.securityStatus, undefined, 'securityStatus should be absent before activate');
+    assert.equal(
+      secAccount.securityStatus,
+      undefined,
+      'securityStatus should be absent before activate',
+    );
     ok('create with intent stores email + dailyLimit');
   } catch (e) {
     fail('create with intent', e);
@@ -431,10 +437,18 @@ async function main() {
     const accountReload = new AccountService({ store, keyring, sdk, chain, walletClient });
     await accountReload.init();
     const secReloaded = accountReload.resolveAccount('sec-wolf')!;
-    assert.equal(secReloaded.securityIntent, undefined, 'finalized intent stays deleted after reload');
+    assert.equal(
+      secReloaded.securityIntent,
+      undefined,
+      'finalized intent stays deleted after reload',
+    );
     assert.equal(secReloaded.securityStatus!.hookInstalled, true, 'status persists after reload');
     const clearReloaded = accountReload.resolveAccount('clear-wolf')!;
-    assert.equal(clearReloaded.securityIntent, undefined, 'cleared intent stays deleted after reload');
+    assert.equal(
+      clearReloaded.securityIntent,
+      undefined,
+      'cleared intent stays deleted after reload',
+    );
     assert.equal(clearReloaded.securityStatus, undefined, 'no status persists after clear+reload');
     ok('intent/status persist correctly across reload');
   } catch (e) {
@@ -444,8 +458,11 @@ async function main() {
   // findAccount rejects unknown account (via updateSecurityIntent)
   try {
     await assert.rejects(
-      () => account.updateSecurityIntent('0x0000000000000000000000000000000000000000', 999, { email: 'x' }),
-      /not found/
+      () =>
+        account.updateSecurityIntent('0x0000000000000000000000000000000000000000', 999, {
+          email: 'x',
+        }),
+      /not found/,
     );
     ok('updateSecurityIntent rejects unknown account');
   } catch (e) {
@@ -472,7 +489,9 @@ async function main() {
     assert.ok(sdk.isInitialized);
     assert.match(sdk.entryPoint, /^0x[0-9a-fA-F]+$/);
     assert.match(sdk.validatorAddress, /^0x[0-9a-fA-F]+$/);
-    ok(`entryPoint=${sdk.entryPoint.slice(0, 10)}... validator=${sdk.validatorAddress.slice(0, 10)}...`);
+    ok(
+      `entryPoint=${sdk.entryPoint.slice(0, 10)}... validator=${sdk.validatorAddress.slice(0, 10)}...`,
+    );
   } catch (e) {
     fail('sdk accessors', e);
   }
@@ -697,7 +716,9 @@ async function main() {
     const firstResponse = new Response('payment required', {
       status: 402,
       headers: {
-        [X402_HEADERS.PAYMENT_REQUIRED]: Buffer.from(JSON.stringify(paymentRequired)).toString('base64'),
+        [X402_HEADERS.PAYMENT_REQUIRED]: Buffer.from(JSON.stringify(paymentRequired)).toString(
+          'base64',
+        ),
       },
     });
 
@@ -759,7 +780,9 @@ async function main() {
     const firstResponse = new Response('payment required', {
       status: 402,
       headers: {
-        [X402_HEADERS.PAYMENT_REQUIRED]: Buffer.from(JSON.stringify(paymentRequired)).toString('base64'),
+        [X402_HEADERS.PAYMENT_REQUIRED]: Buffer.from(JSON.stringify(paymentRequired)).toString(
+          'base64',
+        ),
       },
     });
 
@@ -771,7 +794,7 @@ async function main() {
             success: true,
             transaction: '0x456',
             network: toCaip2(chainId),
-          })
+          }),
         ).toString('base64'),
       },
     });

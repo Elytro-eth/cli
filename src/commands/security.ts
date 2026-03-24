@@ -15,7 +15,11 @@ import {
   DEFAULT_CAPABILITY,
   DEFAULT_SAFETY_DELAY,
 } from '../constants/securityHook';
-import { encodeInstallHook, encodeUninstallHook, encodeForcePreUninstall } from '../utils/contracts/securityHook';
+import {
+  encodeInstallHook,
+  encodeUninstallHook,
+  encodeForcePreUninstall,
+} from '../utils/contracts/securityHook';
 import { savePendingOtpAndOutput, generateOtpId } from '../services/pendingOtp';
 import { serializeUserOpForPending } from '../utils/userOpSerialization';
 import type { StorageAdapter } from '../types';
@@ -63,7 +67,6 @@ function handleSecurityError(err: unknown): void {
   }
 }
 
-
 // ─── Context Setup ────────────────────────────────────────────────────
 
 interface SecurityContext {
@@ -80,13 +83,16 @@ function initSecurityContext(ctx: AppContext): SecurityContext {
   if (!ctx.keyring.isUnlocked) {
     throw new SecurityError(
       ERR_ACCOUNT_NOT_READY,
-      'Keyring is locked. Run `elytro init` to initialize, or check your secret provider (Keychain / ELYTRO_VAULT_SECRET).'
+      'Keyring is locked. Run `elytro init` to initialize, or check your secret provider (OS keychain or ~/.elytro/.vault-key).',
     );
   }
 
   const current = ctx.account.currentAccount;
   if (!current) {
-    throw new SecurityError(ERR_ACCOUNT_NOT_READY, 'No account selected. Run `elytro account create` first.');
+    throw new SecurityError(
+      ERR_ACCOUNT_NOT_READY,
+      'No account selected. Run `elytro account create` first.',
+    );
   }
 
   const account = ctx.account.resolveAccount(current.alias ?? current.address);
@@ -95,12 +101,18 @@ function initSecurityContext(ctx: AppContext): SecurityContext {
   }
 
   if (!account.isDeployed) {
-    throw new SecurityError(ERR_ACCOUNT_NOT_READY, 'Account not deployed. Run `elytro account activate` first.');
+    throw new SecurityError(
+      ERR_ACCOUNT_NOT_READY,
+      'Account not deployed. Run `elytro account activate` first.',
+    );
   }
 
   const chainConfig = ctx.chain.chains.find((c) => c.id === account.chainId);
   if (!chainConfig) {
-    throw new SecurityError(ERR_ACCOUNT_NOT_READY, `No chain config for chainId ${account.chainId}.`);
+    throw new SecurityError(
+      ERR_ACCOUNT_NOT_READY,
+      `No chain config for chainId ${account.chainId}.`,
+    );
   }
 
   ctx.walletClient.initForChain(chainConfig);
@@ -114,7 +126,9 @@ function initSecurityContext(ctx: AppContext): SecurityContext {
       packSignature: (rawSig, valData) => ctx.sdk.packUserOpSignature(rawSig, valData),
     }),
     readContract: async (params) => {
-      return ctx.walletClient.readContract(params as Parameters<typeof ctx.walletClient.readContract>[0]);
+      return ctx.walletClient.readContract(
+        params as Parameters<typeof ctx.walletClient.readContract>[0],
+      );
     },
     getBlockTimestamp: async () => {
       const blockNumber = await ctx.walletClient.raw.getBlockNumber();
@@ -137,11 +151,11 @@ async function buildUserOp(
   chainConfig: ChainConfig,
   account: AccountInfo,
   txs: Array<{ to: Address; value: string; data: Hex }>,
-  spinner: Ora
+  spinner: Ora,
 ): Promise<ElytroUserOperation> {
   const userOp = await ctx.sdk.createSendUserOp(
     account.address,
-    txs.map((tx) => ({ to: tx.to, value: tx.value, data: tx.data }))
+    txs.map((tx) => ({ to: tx.to, value: tx.value, data: tx.data })),
   );
 
   const feeData = await ctx.sdk.getFeeData(chainConfig);
@@ -161,7 +175,7 @@ async function buildUserOp(
       ctx.chain.graphqlEndpoint,
       account.chainId,
       ctx.sdk.entryPoint,
-      userOp
+      userOp,
     );
     if (sponsorResult) applySponsorToUserOp(userOp, sponsorResult);
   } catch {
@@ -178,7 +192,7 @@ async function signAndSend(
   ctx: AppContext,
   chainConfig: ChainConfig,
   userOp: ElytroUserOperation,
-  spinner: Ora
+  spinner: Ora,
 ): Promise<void> {
   spinner.text = 'Signing...';
   const { packedHash, validationData } = await ctx.sdk.getUserOpHash(userOp);
@@ -216,7 +230,7 @@ async function signWithHookAndSend(
   account: AccountInfo,
   hookService: SecurityHookService,
   userOp: ElytroUserOperation,
-  spinner: Ora
+  spinner: Ora,
 ): Promise<void> {
   // Pre-sign: get raw signature
   spinner.text = 'Signing...';
@@ -228,12 +242,24 @@ async function signWithHookAndSend(
 
   // Request hook authorization
   spinner.text = 'Requesting hook authorization...';
-  let hookResult = await hookService.getHookSignature(account.address, account.chainId, ctx.sdk.entryPoint, userOp);
+  let hookResult = await hookService.getHookSignature(
+    account.address,
+    account.chainId,
+    ctx.sdk.entryPoint,
+    userOp,
+  );
 
   // Handle OTP challenge (deferred: saves pending and throws OtpDeferredError)
   if (hookResult.error) {
     spinner.stop();
-    hookResult = await handleOtpChallenge(hookService, account, ctx, userOp, hookResult, '2fa_uninstall');
+    hookResult = await handleOtpChallenge(
+      hookService,
+      account,
+      ctx,
+      userOp,
+      hookResult,
+      '2fa_uninstall',
+    );
   }
 
   // Pack final signature with hook data
@@ -243,7 +269,7 @@ async function signWithHookAndSend(
     rawSignature,
     validationData,
     hookAddress,
-    hookResult.signature! as Hex
+    hookResult.signature! as Hex,
   );
 
   // Send
@@ -272,13 +298,16 @@ async function handleOtpChallenge(
   ctx: AppContext,
   userOp: ElytroUserOperation,
   hookResult: HookSignatureResult,
-  action: 'tx_send' | '2fa_uninstall'
+  action: 'tx_send' | '2fa_uninstall',
 ): Promise<HookSignatureResult> {
   const err = hookResult.error!;
   const errCode = err.code ?? 'UNKNOWN';
 
   if (errCode !== 'OTP_REQUIRED' && errCode !== 'SPENDING_LIMIT_EXCEEDED') {
-    throw new SecurityError(ERR_HOOK_AUTH_FAILED, `Hook authorization failed: ${err.message ?? errCode}`);
+    throw new SecurityError(
+      ERR_HOOK_AUTH_FAILED,
+      `Hook authorization failed: ${err.message ?? errCode}`,
+    );
   }
 
   // Resolve challengeId: use from error, or fetch via requestSecurityOtp, or fallback to random id
@@ -292,7 +321,7 @@ async function handleOtpChallenge(
         account.address,
         account.chainId,
         ctx.sdk.entryPoint,
-        userOp
+        userOp,
       );
       challengeId = otpChallenge.challengeId;
       maskedEmail ??= otpChallenge.maskedEmail;
@@ -419,7 +448,7 @@ export function registerSecurityCommand(program: Command, ctx: AppContext): void
     .option(
       '--capability <flags>',
       'Capability flags: 1=SIGNATURE_ONLY, 2=USER_OP_ONLY, 3=BOTH',
-      String(DEFAULT_CAPABILITY)
+      String(DEFAULT_CAPABILITY),
     )
     .action(async (opts) => {
       try {
@@ -432,13 +461,20 @@ export function registerSecurityCommand(program: Command, ctx: AppContext): void
         spinner.stop();
 
         if (currentStatus.installed) {
-          outputResult({ status: 'already_installed', account: account.alias, address: account.address });
+          outputResult({
+            status: 'already_installed',
+            account: account.alias,
+            address: account.address,
+          });
           return;
         }
 
         const hookAddress = SECURITY_HOOK_ADDRESS_MAP[account.chainId];
         if (!hookAddress) {
-          throw new SecurityError(ERR_INTERNAL, `SecurityHook not deployed on chain ${account.chainId}.`);
+          throw new SecurityError(
+            ERR_INTERNAL,
+            `SecurityHook not deployed on chain ${account.chainId}.`,
+          );
         }
 
         const capabilityFlags = Number(opts.capability) as 1 | 2 | 3;
@@ -446,7 +482,12 @@ export function registerSecurityCommand(program: Command, ctx: AppContext): void
           throw new SecurityError(ERR_INTERNAL, 'Invalid capability flags. Use 1, 2, or 3.');
         }
 
-        const installTx = encodeInstallHook(account.address, hookAddress, DEFAULT_SAFETY_DELAY, capabilityFlags);
+        const installTx = encodeInstallHook(
+          account.address,
+          hookAddress,
+          DEFAULT_SAFETY_DELAY,
+          capabilityFlags,
+        );
         const buildSpinner = ora('Building UserOp...').start();
         try {
           const userOp = await buildUserOp(ctx, chainConfig, account, [installTx], buildSpinner);
@@ -485,7 +526,11 @@ export function registerSecurityCommand(program: Command, ctx: AppContext): void
         spinner.stop();
 
         if (!currentStatus.installed) {
-          outputResult({ status: 'not_installed', account: account.alias, address: account.address });
+          outputResult({
+            status: 'not_installed',
+            account: account.alias,
+            address: account.address,
+          });
           return;
         }
 
@@ -521,10 +566,17 @@ export function registerSecurityCommand(program: Command, ctx: AppContext): void
         const spinner = ora('Requesting email binding...').start();
         let bindingResult: EmailBindingResult;
         try {
-          bindingResult = await hookService.requestEmailBinding(account.address, account.chainId, emailAddr);
+          bindingResult = await hookService.requestEmailBinding(
+            account.address,
+            account.chainId,
+            emailAddr,
+          );
         } catch (err) {
           spinner.stop();
-          throw new SecurityError(ERR_HOOK_AUTH_FAILED, sanitizeErrorMessage((err as Error).message));
+          throw new SecurityError(
+            ERR_HOOK_AUTH_FAILED,
+            sanitizeErrorMessage((err as Error).message),
+          );
         }
         spinner.stop();
 
@@ -560,10 +612,17 @@ export function registerSecurityCommand(program: Command, ctx: AppContext): void
         const spinner = ora('Requesting email change...').start();
         let bindingResult: EmailBindingResult;
         try {
-          bindingResult = await hookService.changeWalletEmail(account.address, account.chainId, emailAddr);
+          bindingResult = await hookService.changeWalletEmail(
+            account.address,
+            account.chainId,
+            emailAddr,
+          );
         } catch (err) {
           spinner.stop();
-          throw new SecurityError(ERR_HOOK_AUTH_FAILED, sanitizeErrorMessage((err as Error).message));
+          throw new SecurityError(
+            ERR_HOOK_AUTH_FAILED,
+            sanitizeErrorMessage((err as Error).message),
+          );
         }
         spinner.stop();
 
@@ -613,18 +672,18 @@ async function handleForceExecute(
   ctx: AppContext,
   chainConfig: ChainConfig,
   account: AccountInfo,
-  currentStatus: Awaited<ReturnType<SecurityHookService['getHookStatus']>>
+  currentStatus: Awaited<ReturnType<SecurityHookService['getHookStatus']>>,
 ): Promise<void> {
   if (!currentStatus.forceUninstall.initiated) {
     throw new SecurityError(
       ERR_SAFETY_DELAY,
-      'Force-uninstall not initiated. Run `security 2fa uninstall --force` first.'
+      'Force-uninstall not initiated. Run `security 2fa uninstall --force` first.',
     );
   }
   if (!currentStatus.forceUninstall.canExecute) {
     throw new SecurityError(
       ERR_SAFETY_DELAY,
-      `Safety delay not elapsed. Available after ${currentStatus.forceUninstall.availableAfter}.`
+      `Safety delay not elapsed. Available after ${currentStatus.forceUninstall.availableAfter}.`,
     );
   }
 
@@ -645,7 +704,7 @@ async function handleForceStart(
   chainConfig: ChainConfig,
   account: AccountInfo,
   currentStatus: Awaited<ReturnType<SecurityHookService['getHookStatus']>>,
-  hookAddress: Address
+  hookAddress: Address,
 ): Promise<void> {
   if (currentStatus.forceUninstall.initiated) {
     outputResult({
@@ -681,7 +740,7 @@ async function handleNormalUninstall(
   chainConfig: ChainConfig,
   account: AccountInfo,
   hookService: SecurityHookService,
-  hookAddress: Address
+  hookAddress: Address,
 ): Promise<void> {
   const uninstallTx = encodeUninstallHook(account.address, hookAddress);
   const spinner = ora('Building UserOp...').start();
@@ -697,7 +756,10 @@ async function handleNormalUninstall(
 
 // ─── Spending Limit Subflows ──────────────────────────────────────────
 
-async function showSpendingLimit(hookService: SecurityHookService, account: AccountInfo): Promise<void> {
+async function showSpendingLimit(
+  hookService: SecurityHookService,
+  account: AccountInfo,
+): Promise<void> {
   const spinner = ora('Loading security profile...').start();
   let profile;
   try {
@@ -717,7 +779,10 @@ async function showSpendingLimit(hookService: SecurityHookService, account: Acco
   }
 
   outputResult({
-    dailyLimitUsd: profile.dailyLimitUsdCents !== undefined ? (profile.dailyLimitUsdCents / 100).toFixed(2) : null,
+    dailyLimitUsd:
+      profile.dailyLimitUsdCents !== undefined
+        ? (profile.dailyLimitUsdCents / 100).toFixed(2)
+        : null,
     email: profile.maskedEmail ?? null,
   });
 }
@@ -726,7 +791,7 @@ async function setSpendingLimit(
   store: StorageAdapter,
   hookService: SecurityHookService,
   account: AccountInfo,
-  amountStr: string
+  amountStr: string,
 ): Promise<void> {
   const amountUsd = parseFloat(amountStr);
   if (isNaN(amountUsd) || amountUsd < 0) {
@@ -737,12 +802,19 @@ async function setSpendingLimit(
   const spinner = ora('Requesting OTP for limit change...').start();
   let otpResult: { maskedEmail: string; otpExpiresAt: string };
   try {
-    otpResult = await hookService.requestDailyLimitOtp(account.address, account.chainId, dailyLimitUsdCents);
+    otpResult = await hookService.requestDailyLimitOtp(
+      account.address,
+      account.chainId,
+      dailyLimitUsdCents,
+    );
   } catch (err) {
     spinner.stop();
     const msg = (err as Error).message ?? '';
     if (msg.includes('EMAIL') || msg.includes('email') || msg.includes('NOT_FOUND')) {
-      throw new SecurityError(ERR_EMAIL_NOT_BOUND, 'Email not bound. Run `elytro security email bind <email>` first.');
+      throw new SecurityError(
+        ERR_EMAIL_NOT_BOUND,
+        'Email not bound. Run `elytro security email bind <email>` first.',
+      );
     }
     throw new SecurityError(ERR_HOOK_AUTH_FAILED, sanitizeErrorMessage(msg));
   }

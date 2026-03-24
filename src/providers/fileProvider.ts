@@ -8,27 +8,26 @@ import type { SecretProvider } from './secretProvider';
  *
  * Follows the SSH model: `~/.elytro/.vault-key`, chmod 0600 (owner read/write only).
  *
- * This is the fallback for Linux headless environments where no Secret Service
- * provider (GNOME Keyring / KWallet) is available — servers, containers, WSL
- * without a desktop session, CI runners.
+ * This is the fallback when the OS credential store is unavailable. It is used
+ * for headless Linux and for any other runtime where `@napi-rs/keyring` cannot
+ * access a working platform backend.
  *
  * Security properties:
  *   - File permissions enforced: 0600 (owner-only read/write)
  *   - Permission drift detection: refuses to load if permissions are wider than 0600
- *   - Better than env vars: no /proc/PID/environ leak, survives process restart
- *   - Still within ~/.elytro/ (weaker domain separation than OS keychain)
+ *   - Survives process restart without relying on env var injection
+ *   - The file is only readable by the current OS user via 0600 permissions
  *
  * Limitations:
  *   - Not encrypted at rest (relies on filesystem ACLs, like SSH private keys)
  *   - Same-UID root can still read the file
- *   - Only activates when KeyringProvider is unavailable (Linux headless)
- *   - On macOS/Windows the OS keychain should always be reachable, so this
- *     provider never activates there
+ *   - Weaker domain separation than the OS keychain
+ *   - Same-UID code can still read the file
  *
  * Security tradeoff rationale:
- *   On a headless Linux box, your choices are: env var (/proc leak, no persistence),
- *   manual base64 display (user error), or a permission-guarded file. The file is
- *   the least-bad option — it's what OpenSSH, GPG, and age all use in this scenario.
+ *   When the platform credential store is unavailable, a permission-guarded file
+ *   is the least-surprising non-interactive fallback. Elytro keeps that file
+ *   private to the CLI user via strict POSIX permissions.
  */
 export class FileProvider implements SecretProvider {
   readonly name = 'file-protected';
@@ -44,21 +43,15 @@ export class FileProvider implements SecretProvider {
     this.keyPath = path.join(base, '.vault-key');
   }
 
-  /**
-   * FileProvider is always technically available on any OS (filesystem always exists).
-   * But it should only be used on Linux when the KeyringProvider is not available.
-   * The resolution logic in resolveProvider handles this gating — FileProvider
-   * itself does not restrict by platform.
-   */
   async available(): Promise<boolean> {
-    // Available if we can write to the parent directory,
-    // or if the key file already exists.
+    // Available if the key file exists, or if we can create it.
     try {
       await fs.access(this.keyPath, constants.R_OK);
       return true;
     } catch {
-      // File doesn't exist yet — check if parent dir is writable
       try {
+        await fs.mkdir(path.dirname(this.keyPath), { recursive: true, mode: 0o700 });
+        await fs.chmod(path.dirname(this.keyPath), 0o700).catch(() => {});
         await fs.access(path.dirname(this.keyPath), constants.W_OK);
         return true;
       } catch {
@@ -74,6 +67,8 @@ export class FileProvider implements SecretProvider {
     // Write atomically: temp file → rename (prevents partial reads)
     const tmpPath = this.keyPath + '.tmp';
     try {
+      await fs.mkdir(path.dirname(this.keyPath), { recursive: true, mode: 0o700 });
+      await fs.chmod(path.dirname(this.keyPath), 0o700).catch(() => {});
       await fs.writeFile(tmpPath, b64, { encoding: 'utf-8', mode: 0o600 });
       await fs.rename(tmpPath, this.keyPath);
       // Ensure final permissions are locked even if rename preserved old perms
@@ -98,7 +93,7 @@ export class FileProvider implements SecretProvider {
         throw new Error(
           `Vault key file has insecure permissions: ${modeToOctal(mode)} (expected 0600).\n` +
             `Fix with: chmod 600 ${this.keyPath}\n` +
-            'Refusing to load until permissions are corrected.'
+            'Refusing to load until permissions are corrected.',
         );
       }
 
@@ -109,7 +104,7 @@ export class FileProvider implements SecretProvider {
       const key = Buffer.from(trimmed, 'base64');
       if (key.length !== 32) {
         throw new Error(
-          `Vault key file has invalid content: expected 32 bytes (base64), got ${key.length}.`
+          `Vault key file has invalid content: expected 32 bytes (base64), got ${key.length}.`,
         );
       }
       return new Uint8Array(key);

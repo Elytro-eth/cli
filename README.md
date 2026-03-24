@@ -31,7 +31,7 @@ elytro query balance
 ## Key Features
 
 - **Multi-account management** — Create multiple smart accounts per chain with user-friendly aliases
-- **Zero-interaction security** — macOS/Linux/Windows: vault key stored in system keychain via `@napi-rs/keyring`; fallback: inject via `ELYTRO_VAULT_SECRET`
+- **Zero-interaction security** — vault key stored in the system keychain when available; otherwise Elytro falls back to `~/.elytro/.vault-key` with restricted permissions
 - **Flexible transaction building** — Single transfers, batch operations, contract calls via unified `--tx` syntax
 - **Transaction simulation** — Preview gas, paymaster sponsorship, and balance impact before sending
 - **Cross-chain support** — Manage accounts across Ethereum, Optimism, Arbitrum, Base, and testnets
@@ -42,14 +42,14 @@ elytro query balance
 
 ## Supported Chains
 
-| Chain            | Chain ID  |
-| ---------------- | --------- |
-| Ethereum         | 1         |
-| Optimism         | 10        |
-| Arbitrum One     | 42161     |
-| Base             | 8453      |
-| Sepolia          | 11155111  |
-| Optimism Sepolia | 11155420  |
+| Chain            | Chain ID |
+| ---------------- | -------- |
+| Ethereum         | 1        |
+| Optimism         | 10       |
+| Arbitrum One     | 42161    |
+| Base             | 8453     |
+| Sepolia          | 11155111 |
+| Optimism Sepolia | 11155420 |
 
 Public RPC and bundler endpoints are used by default. Provide your own Alchemy/Pimlico keys for higher rate limits.
 
@@ -67,19 +67,19 @@ Public RPC and bundler endpoints are used by default. Provide your own Alchemy/P
 
 - **No plaintext keys on disk** — vault key stored in system keychain or injected at runtime
 - **AES-GCM encryption** — all private keys encrypted with vault key before storage
-- **Consume-once env var** — `ELYTRO_VAULT_SECRET` deleted from process after load
+- **Permission-guarded fallback** — when the OS keychain is unavailable, Elytro stores the vault key in `~/.elytro/.vault-key` with owner-only permissions
 - **Memory cleanup** — all key buffers zeroed after use
 
 ## Configuration
 
-| Variable              | Purpose                                   | Required             |
-| --------------------- | ----------------------------------------- | -------------------- |
-| `ELYTRO_VAULT_SECRET` | Base64 vault key (non-keychain platforms) | Yes, if no keychain  |
-| `ELYTRO_ALCHEMY_KEY`  | Alchemy RPC endpoint                      | Optional (rate limit)|
-| `ELYTRO_PIMLICO_KEY`  | Bundler + paymaster                       | Optional (rate limit)|
-| `ELYTRO_ENV`          | `development` or `production`             | Optional             |
+| Variable             | Purpose                       | Required              |
+| -------------------- | ----------------------------- | --------------------- |
+| `ELYTRO_ALCHEMY_KEY` | Alchemy RPC endpoint          | Optional (rate limit) |
+| `ELYTRO_PIMLICO_KEY` | Bundler + paymaster           | Optional (rate limit) |
+| `ELYTRO_ENV`         | `development` or `production` | Optional              |
 
 Persist API keys:
+
 ```bash
 elytro config set alchemy-key <key>
 elytro config set pimlico-key <key>

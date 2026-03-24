@@ -1,4 +1,4 @@
-import { readFile, writeFile, mkdir, access } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, access, chmod } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import type { StorageAdapter } from '../types';
@@ -41,8 +41,10 @@ export class FileStore implements StorageAdapter {
 
   async save<T>(key: string, data: T): Promise<void> {
     const path = this.filePath(key);
-    await mkdir(dirname(path), { recursive: true });
-    await writeFile(path, JSON.stringify(data, null, 2), 'utf-8');
+    await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+    await chmod(dirname(path), 0o700).catch(() => {});
+    await writeFile(path, JSON.stringify(data, null, 2), { encoding: 'utf-8', mode: 0o600 });
+    await chmod(path, 0o600).catch(() => {});
   }
 
   async remove(key: string): Promise<void> {
@@ -69,7 +71,8 @@ export class FileStore implements StorageAdapter {
 
   /** Ensure the root directory exists. Call once at startup. */
   async init(): Promise<void> {
-    await mkdir(this.root, { recursive: true });
+    await mkdir(this.root, { recursive: true, mode: 0o700 });
+    await chmod(this.root, 0o700).catch(() => {});
   }
 
   get dataDir(): string {
