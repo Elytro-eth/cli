@@ -67,6 +67,7 @@ async function main(): Promise<void> {
   } finally {
     // Clear decrypted keys from memory
     ctx?.keyring.lock();
+    ctx?.chain.lockUserKeys();
   }
 }
 

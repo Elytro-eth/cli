@@ -1,5 +1,6 @@
-import type { StorageAdapter, ChainConfig, CliConfig, UserKeys } from '../types';
+import type { StorageAdapter, ChainConfig, CliConfig, UserKeys, EncryptedData } from '../types';
 import { getDefaultConfig, buildChains } from '../utils/config';
+import { encryptWithKey, decryptWithKey } from '../utils/passworder';
 
 const STORAGE_KEY = 'config';
 const USER_KEYS_KEY = 'user-keys';
@@ -18,31 +19,83 @@ const USER_KEYS_KEY = 'user-keys';
  * - No version-migration logic (fresh start for CLI)
  *
  * API keys:
- * - Stored separately in user-keys.json (never in config.json)
+ * - Stored separately in user-keys.json (encrypted with vault key when available)
  * - Resolved at init: userKeys > env vars > public fallback
+ * - Before vault key is available, user keys are loaded but not decrypted
+ *   (endpoints fall back to public). Call `unlockUserKeys(vaultKey)` after
+ *   the vault key is available to decrypt and activate user-configured endpoints.
+ *
+ * Migration:
+ * - If user-keys.json contains plaintext (legacy format without `version` field),
+ *   `unlockUserKeys()` automatically encrypts it with the vault key on first load.
  */
 export class ChainService {
   private store: StorageAdapter;
   private config: CliConfig;
   private userKeys: UserKeys = {};
+  /** Vault key for encrypting/decrypting user keys. null = vault not yet unlocked. */
+  private vaultKey: Uint8Array | null = null;
 
   constructor(store: StorageAdapter) {
     this.store = store;
     this.config = getDefaultConfig();
   }
 
-  /** Load persisted config and user keys, rebuild chain endpoints. */
+  /**
+   * Load persisted config (non-sensitive).
+   * User keys are NOT loaded here — call `unlockUserKeys()` after the
+   * vault key becomes available.
+   */
   async init(): Promise<void> {
-    // Load user keys first — they affect chain endpoint resolution
-    this.userKeys = (await this.store.load<UserKeys>(USER_KEYS_KEY)) ?? {};
-
     const saved = await this.store.load<CliConfig>(STORAGE_KEY);
     if (saved) {
       this.config = { ...getDefaultConfig(), ...saved };
     }
 
-    // Always rebuild chain endpoints with current key resolution
+    // Build chains with public endpoints initially.
+    // User-configured endpoints are activated by unlockUserKeys().
+    this.config.chains = buildChains(undefined, undefined);
+  }
+
+  /**
+   * Decrypt (or migrate) user API keys using the vault key.
+   * Call this after the vault key is available (post keyring.unlock).
+   *
+   * - If user-keys.json is encrypted (has `version` field): decrypt with vault key.
+   * - If user-keys.json is plaintext (legacy): load, encrypt, overwrite.
+   * - If user-keys.json is absent: no-op.
+   */
+  async unlockUserKeys(vaultKey: Uint8Array): Promise<void> {
+    this.vaultKey = new Uint8Array(vaultKey);
+
+    const raw = await this.store.load<EncryptedData | UserKeys>(USER_KEYS_KEY);
+    if (!raw) {
+      // No user keys stored — nothing to decrypt
+      this.config.chains = buildChains(undefined, undefined);
+      return;
+    }
+
+    // Detect format: encrypted (has `version` + `data` + `iv`) vs plaintext (has alchemyKey/pimlicoKey)
+    if (isEncryptedData(raw)) {
+      // Decrypt with vault key
+      this.userKeys = await decryptWithKey<UserKeys>(vaultKey, raw);
+    } else {
+      // Legacy plaintext — migrate to encrypted format
+      this.userKeys = raw as UserKeys;
+      await this.persistUserKeys();
+    }
+
+    // Rebuild chain endpoints with decrypted keys
     this.config.chains = buildChains(this.userKeys.alchemyKey, this.userKeys.pimlicoKey);
+  }
+
+  /** Clear vault key and plaintext user keys from memory. Called on CLI exit. */
+  lockUserKeys(): void {
+    if (this.vaultKey) {
+      this.vaultKey.fill(0);
+      this.vaultKey = null;
+    }
+    this.userKeys = {};
   }
 
   // ─── User Keys ──────────────────────────────────────────────────
@@ -55,14 +108,14 @@ export class ChainService {
   /** Set a user API key and rebuild chain endpoints. */
   async setUserKey(key: keyof UserKeys, value: string): Promise<void> {
     this.userKeys[key] = value;
-    await this.store.save(USER_KEYS_KEY, this.userKeys);
+    await this.persistUserKeys();
     this.config.chains = buildChains(this.userKeys.alchemyKey, this.userKeys.pimlicoKey);
   }
 
   /** Remove a user API key and fall back to env / public endpoints. */
   async removeUserKey(key: keyof UserKeys): Promise<void> {
     delete this.userKeys[key];
-    await this.store.save(USER_KEYS_KEY, this.userKeys);
+    await this.persistUserKeys();
     this.config.chains = buildChains(this.userKeys.alchemyKey, this.userKeys.pimlicoKey);
   }
 
@@ -125,4 +178,34 @@ export class ChainService {
   private async persist(): Promise<void> {
     await this.store.save(STORAGE_KEY, this.config);
   }
+
+  /**
+   * Persist user keys — encrypted if vault key is available, plaintext otherwise.
+   * The plaintext path only applies before `elytro init` (no vault key yet).
+   */
+  private async persistUserKeys(): Promise<void> {
+    const hasKeys = this.userKeys.alchemyKey || this.userKeys.pimlicoKey;
+    if (!hasKeys) {
+      // Remove the file entirely if no keys remain
+      await this.store.remove(USER_KEYS_KEY);
+      return;
+    }
+
+    if (this.vaultKey) {
+      const encrypted = await encryptWithKey(this.vaultKey, this.userKeys);
+      await this.store.save(USER_KEYS_KEY, encrypted);
+    } else {
+      // Pre-init fallback: store plaintext (will be migrated on next unlockUserKeys)
+      await this.store.save(USER_KEYS_KEY, this.userKeys);
+    }
+  }
+}
+
+// ─── Module-level helpers ────────────────────────────────────────
+
+/** Type guard: does this JSON blob look like EncryptedData (version + data + iv)? */
+function isEncryptedData(obj: unknown): obj is EncryptedData {
+  if (typeof obj !== 'object' || obj === null) return false;
+  const o = obj as Record<string, unknown>;
+  return typeof o.data === 'string' && typeof o.iv === 'string' && typeof o.version === 'number';
 }

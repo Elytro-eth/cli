@@ -18,12 +18,24 @@ const STORAGE_KEY = 'keyring';
  *   exit  → lock() clears vault AND vault key from memory
  *   export → exportVault(password) re-encrypts with user password
  *   import → importVault(encrypted, password, vaultKey) decrypts then re-encrypts
+ *
+ * Memory security:
+ *   Private keys are held as Uint8Array (scrubbable) in `keyBuffers`, NOT as
+ *   hex strings. The VaultData still uses hex for JSON serialization, but the
+ *   hex strings are only created transiently during encrypt/sign operations.
+ *   On lock(), all Uint8Array key buffers are zero-filled before release.
  */
 export class KeyringService {
   private store: StorageAdapter;
   private vault: VaultData | null = null;
   /** Vault key kept in memory for re-encryption operations (addOwner, switchOwner). */
   private vaultKey: Uint8Array | null = null;
+  /**
+   * In-memory private key buffers indexed by owner address.
+   * These are the scrubbable counterparts of VaultData.owners[].key.
+   * Zero-filled on lock().
+   */
+  private keyBuffers: Map<Address, Uint8Array> = new Map();
 
   constructor(store: StorageAdapter) {
     this.store = store;
@@ -50,11 +62,13 @@ export class KeyringService {
       currentOwnerId: account.address,
     };
 
+    // Encrypt before hydrating (hydration scrubs hex keys from the in-memory vault)
     const encrypted = await encryptWithKey(vaultKey, vault);
     await this.store.save(STORAGE_KEY, encrypted);
 
     this.vault = vault;
     this.vaultKey = new Uint8Array(vaultKey);
+    this.hydrateKeyBuffers(vault);
     return account.address;
   }
 
@@ -71,10 +85,17 @@ export class KeyringService {
     }
     this.vault = await decryptWithKey<VaultData>(vaultKey, encrypted);
     this.vaultKey = new Uint8Array(vaultKey);
+    this.hydrateKeyBuffers(this.vault);
   }
 
   /** Lock the vault, clearing decrypted keys and vault key from memory. */
   lock(): void {
+    // Zero-fill all private key buffers before releasing
+    for (const buf of this.keyBuffers.values()) {
+      buf.fill(0);
+    }
+    this.keyBuffers.clear();
+
     this.vault = null;
     if (this.vaultKey) {
       this.vaultKey.fill(0);
@@ -134,7 +155,10 @@ export class KeyringService {
     const privateKey = generatePrivateKey();
     const account = privateKeyToAccount(privateKey);
 
-    this.vault!.owners.push({ id: account.address, key: privateKey });
+    // Push a key-less entry; the actual key lives solely in keyBuffers.
+    // persistVault() reconstructs full VaultData from keyBuffers before encrypting.
+    this.vault!.owners.push({ id: account.address, key: '' as Hex });
+    this.keyBuffers.set(account.address, hexToBytes(privateKey));
     await this.persistVault();
     return account.address;
   }
@@ -159,7 +183,8 @@ export class KeyringService {
    */
   async exportVault(password: string): Promise<EncryptedData> {
     this.ensureUnlocked();
-    return encrypt(password, this.vault!);
+    // Reconstruct full VaultData (keys scrubbed from this.vault; live in keyBuffers)
+    return encrypt(password, this.buildVaultWithKeys());
   }
 
   /**
@@ -168,10 +193,12 @@ export class KeyringService {
    */
   async importVault(encrypted: EncryptedData, password: string, vaultKey: Uint8Array): Promise<void> {
     const vault = await decrypt<VaultData>(password, encrypted);
-    this.vault = vault;
     this.vaultKey = new Uint8Array(vaultKey);
+    // Encrypt before hydrating: hydrateKeyBuffers scrubs hex keys from vault
     const reEncrypted = await encryptWithKey(vaultKey, vault);
     await this.store.save(STORAGE_KEY, reEncrypted);
+    this.vault = vault;
+    this.hydrateKeyBuffers(vault);
   }
 
   // ─── Rekey (vault key rotation) ───────────────────────────────
@@ -184,15 +211,24 @@ export class KeyringService {
 
   // ─── Internal ───────────────────────────────────────────────────
 
+  /**
+   * Get the current owner's private key as Hex for signing.
+   *
+   * Reads from the scrubbable Uint8Array keyBuffers and converts to Hex
+   * on the fly. The returned Hex string is short-lived (used immediately
+   * by viem's privateKeyToAccount, then goes out of scope for GC).
+   */
   private getCurrentKey(): Hex {
     if (!this.vault) {
       throw new Error('Keyring is locked. Cannot sign.');
     }
-    const owner = this.vault.owners.find((o) => o.id === this.vault!.currentOwnerId);
-    if (!owner) {
+    const ownerId = this.vault.currentOwnerId as Address;
+    const buf = this.keyBuffers.get(ownerId);
+    if (!buf) {
       throw new Error('Current owner key not found in vault.');
     }
-    return owner.key;
+    // Convert raw bytes → 0x-prefixed hex string (transient, GC'd after use)
+    return `0x${Buffer.from(buf).toString('hex')}` as Hex;
   }
 
   private ensureUnlocked(): void {
@@ -204,7 +240,50 @@ export class KeyringService {
   private async persistVault(): Promise<void> {
     if (!this.vault) throw new Error('No vault to persist.');
     if (!this.vaultKey) throw new Error('No vault key available for re-encryption.');
-    const encrypted = await encryptWithKey(this.vaultKey, this.vault);
+    const encrypted = await encryptWithKey(this.vaultKey, this.buildVaultWithKeys());
     await this.store.save(STORAGE_KEY, encrypted);
   }
+
+  /**
+   * Reconstruct a complete VaultData with hex keys sourced from keyBuffers.
+   * Used by persistVault and exportVault — the live this.vault has keys scrubbed.
+   */
+  private buildVaultWithKeys(): VaultData {
+    return {
+      ...this.vault!,
+      owners: this.vault!.owners.map((owner) => {
+        const buf = this.keyBuffers.get(owner.id);
+        if (!buf) throw new Error(`Key buffer missing for owner ${owner.id}`);
+        return { ...owner, key: `0x${Buffer.from(buf).toString('hex')}` as Hex };
+      }),
+    };
+  }
+
+  /**
+   * Convert vault owner hex keys into scrubbable Uint8Array buffers,
+   * then scrub the hex strings from the in-memory vault so the sole live
+   * copy of each private key is the zero-fillable Uint8Array in keyBuffers.
+   * Called after decryption (unlock, createNewOwner, importVault).
+   */
+  private hydrateKeyBuffers(vault: VaultData): void {
+    // Clear any previous buffers (zero-fill first)
+    for (const buf of this.keyBuffers.values()) {
+      buf.fill(0);
+    }
+    this.keyBuffers.clear();
+
+    for (const owner of vault.owners) {
+      this.keyBuffers.set(owner.id, hexToBytes(owner.key));
+      // Scrub hex key from in-memory vault — keyBuffers is now the sole live copy
+      owner.key = '' as Hex;
+    }
+  }
+}
+
+// ─── Module-level helpers ────────────────────────────────────────
+
+/** Convert a 0x-prefixed hex string to Uint8Array. */
+function hexToBytes(hex: Hex): Uint8Array {
+  const clean = hex.startsWith('0x') ? hex.slice(2) : hex;
+  return new Uint8Array(Buffer.from(clean, 'hex'));
 }
