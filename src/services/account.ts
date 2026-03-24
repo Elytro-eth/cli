@@ -1,5 +1,11 @@
 import type { Address } from 'viem';
-import type { StorageAdapter, AccountInfo, SecurityIntent, SecurityStatus } from '../types';
+import type {
+  StorageAdapter,
+  AccountInfo,
+  SecurityIntent,
+  SecurityStatus,
+  DelegationInfo,
+} from '../types';
 import type { KeyringService } from './keyring';
 import type { SDKService } from './sdk';
 import type { ChainService } from './chain';
@@ -133,6 +139,21 @@ export class AccountService {
     return (
       this.state.accounts.find((a) => a.alias.toLowerCase() === needle || a.address.toLowerCase() === needle) ?? null
     );
+  }
+
+  private requireAccount(aliasOrAddress?: string): AccountInfo {
+    if (aliasOrAddress) {
+      const resolved = this.resolveAccount(aliasOrAddress);
+      if (!resolved) {
+        throw new Error(`Account "${aliasOrAddress}" not found.`);
+      }
+      return resolved;
+    }
+    const current = this.currentAccount;
+    if (!current) {
+      throw new Error('No active account. Use `elytro account switch` or pass --account.');
+    }
+    return current;
   }
 
   // ─── Switch ─────────────────────────────────────────────────────
@@ -307,5 +328,43 @@ export class AccountService {
 
   private async persist(): Promise<void> {
     await this.store.save(STORAGE_KEY, this.state);
+  }
+
+  // ─── Delegations ─────────────────────────────────────────────────
+
+  listDelegations(aliasOrAddress?: string): DelegationInfo[] {
+    const account = this.requireAccount(aliasOrAddress);
+    return [...(account.delegations ?? [])];
+  }
+
+  getDelegation(aliasOrAddress: string | undefined, delegationId: string): DelegationInfo | null {
+    const account = this.requireAccount(aliasOrAddress);
+    return (account.delegations ?? []).find((d) => d.id === delegationId) ?? null;
+  }
+
+  async addDelegation(aliasOrAddress: string | undefined, delegation: DelegationInfo): Promise<DelegationInfo> {
+    const account = this.requireAccount(aliasOrAddress);
+    account.delegations = account.delegations ?? [];
+    const exists = account.delegations.some((d) => d.id === delegation.id);
+    if (exists) {
+      throw new Error(`Delegation "${delegation.id}" already exists for this account.`);
+    }
+    account.delegations.push(delegation);
+    await this.persist();
+    return delegation;
+  }
+
+  async removeDelegation(aliasOrAddress: string | undefined, delegationId: string): Promise<void> {
+    const account = this.requireAccount(aliasOrAddress);
+    const before = account.delegations?.length ?? 0;
+    if (!before) {
+      throw new Error('No delegations stored for this account.');
+    }
+    const remaining = account.delegations!.filter((d) => d.id !== delegationId);
+    if (remaining.length === before) {
+      throw new Error(`Delegation "${delegationId}" not found.`);
+    }
+    account.delegations = remaining;
+    await this.persist();
   }
 }

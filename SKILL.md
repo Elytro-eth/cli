@@ -128,6 +128,13 @@ elytro security email bind u@x.com
 # User checks email → elytro otp submit <id> <code>
 ```
 
+## x402 payments (beta)
+
+- Delegations: ask the provider for their ERC-7710 DelegationManager + permission context, then store it with `elytro delegation add --manager <addr> --token <addr> --payee <addr> --amount <atomic> --permission 0x...`. Use `delegation list/show/remove` to manage entries per account. If the provider only offers EIP-3009 (USDC) on an EVM chain, Elytro will auto-sign the authorization—no delegation needed.
+- Dry run paywalls with `elytro request --dry-run <url>` — prints the resource info, transfer method (ERC-7710 vs EIP-3009), and required token amount directly from the `PAYMENT-REQUIRED` header.
+- To pay, run `elytro request <url> [--method POST --json '{"topic":"defi"}']` (after confirming with the user). The command replays the request automatically with `PAYMENT-SIGNATURE` once a matching delegation is found or it has synthesized an EIP-3009 authorization.
+- Results include the settlement header (transaction hash + network). Reference [docs/x402.md](docs/x402.md) for the full workflow and troubleshooting tips.
+
 ---
 
 ## When something goes wrong

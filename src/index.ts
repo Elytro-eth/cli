@@ -5,6 +5,8 @@ import { registerAccountCommand } from "./commands/account";
 import { registerTxCommand } from "./commands/tx";
 import { registerQueryCommand } from "./commands/query";
 import { registerSecurityCommand } from "./commands/security";
+import { registerDelegationCommand } from "./commands/delegation";
+import { registerRequestCommand } from "./commands/request";
 import { registerOtpCommand } from "./commands/otp";
 import { registerConfigCommand } from "./commands/config";
 import { registerUpdateCommand } from "./commands/update";
@@ -50,6 +52,8 @@ async function main(): Promise<void> {
     registerTxCommand(program, ctx);
     registerQueryCommand(program, ctx);
     registerSecurityCommand(program, ctx);
+    registerDelegationCommand(program, ctx);
+    registerRequestCommand(program, ctx);
     registerOtpCommand(program, ctx);
     registerConfigCommand(program, ctx);
     registerUpdateCommand(program);
