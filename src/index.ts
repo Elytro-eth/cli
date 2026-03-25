@@ -10,6 +10,7 @@ import { registerRequestCommand } from './commands/request';
 import { registerOtpCommand } from './commands/otp';
 import { registerConfigCommand } from './commands/config';
 import { registerUpdateCommand } from './commands/update';
+import { registerServicesCommand } from './commands/services';
 import { registerRecoveryCommand } from './commands/recovery';
 import { runPrune } from './commands/prune';
 import { outputError, sanitizeErrorMessage } from './utils/display';
@@ -55,6 +56,7 @@ async function main(): Promise<void> {
     registerOtpCommand(program, ctx);
     registerConfigCommand(program, ctx);
     registerUpdateCommand(program);
+    registerServicesCommand(program);
 
     registerRecoveryCommand(program, ctx);
     // Phase 4: registerCallCommand(program, ctx);
