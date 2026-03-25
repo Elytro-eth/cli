@@ -19,13 +19,14 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { webcrypto } from 'node:crypto';
 
-import { FileStore } from '../src/storage';
+import { FileStore, DelegationStore } from '../src/storage';
 import {
   KeyringService,
   ChainService,
   SDKService,
   WalletClientService,
   AccountService,
+  DelegationService,
 } from '../src/services';
 import { KeychainProvider, KeyringProvider, FileProvider } from '../src/providers';
 import { X402Service } from '../src/services/x402';
@@ -77,13 +78,26 @@ async function setup() {
   const account = new AccountService({ store, keyring, sdk, chain, walletClient });
   await account.init();
 
-  return { store, keyring, chain, sdk, walletClient, account };
+  const delegationStore = new DelegationStore(store);
+  const delegation = new DelegationService({
+    delegationStore,
+    account,
+    sdk,
+    keyring,
+    chain,
+    walletClient,
+  });
+
+  // Migrate any legacy delegations (no-op on fresh test data)
+  await delegation.migrateLegacy();
+
+  return { store, keyring, chain, sdk, walletClient, account, delegation, delegationStore };
 }
 
 async function main() {
   console.log(`\n── Smoke Test (data: ${TEST_DIR}) ──\n`);
 
-  const { store, keyring, chain, sdk, walletClient, account } = await setup();
+  const { store, keyring, chain, sdk, walletClient, account, delegation } = await setup();
   const chainId = chain.currentChainId;
 
   // ─── 1. Vault Key Generation ──────────────────────────────────
@@ -679,7 +693,7 @@ async function main() {
   // ─── 19. Delegation storage + x402 service ─────────────────────
   console.log('[x402]');
   try {
-    const delegation = await account.addDelegation('alpha-wolf', {
+    const testDelegation = await delegation.add('alpha-wolf', {
       id: 'test-delegation',
       manager: '0x000000000000000000000000000000000000dEaD',
       token: '0x000000000000000000000000000000000000bEEF',
@@ -696,12 +710,12 @@ async function main() {
           scheme: 'exact',
           network: toCaip2(chainId),
           amount: '1000',
-          asset: delegation.token,
-          payTo: delegation.payee,
+          asset: testDelegation.token,
+          payTo: testDelegation.payee,
           maxTimeoutSeconds: 60,
           extra: {
             assetTransferMethod: EXACT_ASSET_TRANSFER_METHODS.ERC7710,
-            delegationManager: delegation.manager,
+            delegationManager: testDelegation.manager,
           },
         },
       ],
@@ -737,7 +751,7 @@ async function main() {
         return callCount === 1 ? firstResponse : secondResponse;
       }) as typeof fetch;
 
-      const x402 = new X402Service({ account, keyring, sdk });
+      const x402 = new X402Service({ account, keyring, sdk, delegation });
       const result = await x402.performRequest({
         url: 'https://example.com/paywall',
         method: 'GET',
@@ -746,7 +760,7 @@ async function main() {
       });
 
       assert.equal(result.type, 'paid');
-      assert.equal(result.payment?.delegationId, delegation.id);
+      assert.equal(result.payment?.delegationId, testDelegation.id);
       assert.equal(result.payment?.settlement?.success, true);
       ok('x402 paid flow');
     } finally {
@@ -807,7 +821,7 @@ async function main() {
         return callCount === 1 ? firstResponse : secondResponse;
       }) as typeof fetch;
 
-      const x402 = new X402Service({ account, keyring, sdk });
+      const x402 = new X402Service({ account, keyring, sdk, delegation });
       const result = await x402.performRequest({
         url: 'https://example.com/paywall-eip3009',
         method: 'POST',
@@ -867,7 +881,7 @@ async function main() {
         return callCount === 1 ? firstResponse : secondResponse;
       }) as typeof fetch;
 
-      const x402 = new X402Service({ account, keyring, sdk });
+      const x402 = new X402Service({ account, keyring, sdk, delegation });
       const result = await x402.performRequest({
         url: 'https://example.com/body-only',
         method: 'GET',

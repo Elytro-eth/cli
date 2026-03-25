@@ -1,4 +1,5 @@
-import { readFile, writeFile, mkdir, access, chmod } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, access, chmod, rename } from 'node:fs/promises';
+import { randomBytes } from 'node:crypto';
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import type { StorageAdapter } from '../types';
@@ -41,10 +42,17 @@ export class FileStore implements StorageAdapter {
 
   async save<T>(key: string, data: T): Promise<void> {
     const path = this.filePath(key);
-    await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-    await chmod(dirname(path), 0o700).catch(() => {});
-    await writeFile(path, JSON.stringify(data, null, 2), { encoding: 'utf-8', mode: 0o600 });
-    await chmod(path, 0o600).catch(() => {});
+    const dir = dirname(path);
+    await mkdir(dir, { recursive: true, mode: 0o700 });
+    await chmod(dir, 0o700).catch(() => {});
+
+    // Atomic write: write to a temp file then rename.
+    // rename() on the same filesystem is atomic on POSIX and effectively
+    // atomic on modern Windows NTFS, preventing partial-write corruption.
+    const tmp = `${path}.${randomBytes(4).toString('hex')}.tmp`;
+    await writeFile(tmp, JSON.stringify(data, null, 2), { encoding: 'utf-8', mode: 0o600 });
+    await chmod(tmp, 0o600).catch(() => {});
+    await rename(tmp, path);
   }
 
   async remove(key: string): Promise<void> {

@@ -36,7 +36,7 @@ export interface PaymentExtensions {
 }
 
 export interface PaymentPayload<
-  TPayload extends Record<string, unknown> = Record<string, unknown>
+  TPayload extends Record<string, unknown> = Record<string, unknown>,
 > {
   x402Version: number;
   resource?: ResourceInfo;
@@ -45,7 +45,7 @@ export interface PaymentPayload<
   extensions?: PaymentExtensions;
 }
 
-export interface ERC7710Payload {
+export interface ERC7710Payload extends Record<string, unknown> {
   delegationManager: Address;
   permissionContext: string;
   delegator: Address;

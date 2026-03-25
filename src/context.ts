@@ -1,4 +1,4 @@
-import { FileStore } from './storage';
+import { FileStore, DelegationStore } from './storage';
 import {
   KeyringService,
   ChainService,
@@ -6,6 +6,7 @@ import {
   WalletClientService,
   AccountService,
   RecoveryService,
+  DelegationService,
 } from './services';
 import { resolveProvider } from './providers';
 import type { SecretProvider } from './providers';
@@ -24,6 +25,7 @@ export interface AppContext {
   sdk: SDKService;
   walletClient: WalletClientService;
   account: AccountService;
+  delegation: DelegationService;
   recovery: RecoveryService;
   /**
    * The resolved provider for storing/loading the vault key.
@@ -109,6 +111,21 @@ export async function createAppContext(): Promise<AppContext> {
   });
   await account.init();
 
+  const delegationStore = new DelegationStore(store);
+
+  const delegation = new DelegationService({
+    delegationStore,
+    account,
+    sdk,
+    keyring,
+    chain,
+    walletClient,
+  });
+
+  // Migrate legacy delegations from accounts.json → per-account files.
+  // Safe to run on every startup: idempotent (drainLegacy clears after first run).
+  await delegation.migrateLegacy();
+
   const recovery = new RecoveryService({
     store,
     sdk,
@@ -138,6 +155,7 @@ export async function createAppContext(): Promise<AppContext> {
     sdk,
     walletClient,
     account,
+    delegation,
     recovery,
     secretProvider: loadProvider,
   };

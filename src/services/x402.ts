@@ -14,13 +14,16 @@ import {
   parseCaip2Network,
   toCaip2,
 } from '../constants/x402';
-import type { PaymentRequired, PaymentRequirements, PaymentPayload, ERC7710Payload, SettlementResponse } from '../types/x402';
+import type {
+  PaymentRequired,
+  PaymentRequirements,
+  PaymentPayload,
+  ERC7710Payload,
+  SettlementResponse,
+} from '../types/x402';
 import type { DelegationInfo, AccountInfo } from '../types';
-import {
-  getDomainSeparator,
-  getEncoded1271MessageHash,
-  getEncodedSHA,
-} from './securityHook';
+import type { DelegationService } from './delegation';
+import { getDomainSeparator, getEncoded1271MessageHash, getEncodedSHA } from './securityHook';
 
 export interface HttpRequestOptions {
   url: string;
@@ -60,32 +63,41 @@ export class X402Service {
   private account: AccountService;
   private keyring: KeyringService;
   private sdk: SDKService;
+  private delegation: DelegationService;
 
-  constructor(deps: { account: AccountService; keyring: KeyringService; sdk: SDKService }) {
+  constructor(deps: {
+    account: AccountService;
+    keyring: KeyringService;
+    sdk: SDKService;
+    delegation: DelegationService;
+  }) {
     this.account = deps.account;
     this.keyring = deps.keyring;
     this.sdk = deps.sdk;
+    this.delegation = deps.delegation;
   }
 
   async performRequest(options: HttpRequestOptions): Promise<HttpRequestResult> {
     const init = this.buildRequestInit(options);
     if (options.verbose) {
-      const initHeaders = init.headers instanceof Headers ? Object.fromEntries(init.headers.entries()) : init.headers;
+      const initHeaders =
+        init.headers instanceof Headers ? Object.fromEntries(init.headers.entries()) : init.headers;
       this.logDebug('Request', { url: options.url, method: init.method, headers: initHeaders });
     }
     const initialResponse = await fetch(options.url, init);
     const initialBody = await initialResponse.text();
 
-    if (initialResponse.status !== 402) {
+    const paymentHeader = initialResponse.headers.get(X402_HEADERS.PAYMENT_REQUIRED);
+    const is402 = initialResponse.status === 402;
+
+    // Not a payment response: no 402 status AND no PAYMENT-REQUIRED header.
+    if (!is402 && !paymentHeader) {
       if (options.verbose) {
         this.logDebug('Response', {
           status: initialResponse.status,
           headers: Object.fromEntries(initialResponse.headers.entries()),
           body: initialBody,
         });
-      }
-      if (options.verbose) {
-        this.logDebug('Response', { status: initialResponse.status, headers: Object.fromEntries(initialResponse.headers.entries()), body: initialBody });
       }
       return {
         type: 'plain',
@@ -100,10 +112,19 @@ export class X402Service {
       };
     }
 
-    const paymentHeader = initialResponse.headers.get(X402_HEADERS.PAYMENT_REQUIRED);
+    // Payment required: decode from header (preferred), then body fallback.
+    // The header takes precedence because body-based encoding is a legacy v1
+    // pattern and some servers return non-JSON bodies alongside the header.
     const paymentRequired = paymentHeader
       ? this.decodePaymentRequired(paymentHeader)
-      : this.parsePaymentRequiredFromBody(initialBody);
+      : is402
+        ? this.parsePaymentRequiredFromBody(initialBody)
+        : (() => {
+            throw new Error(
+              `Server returned ${initialResponse.status} with a PAYMENT-REQUIRED header ` +
+                'but not a 402 status code. This is ambiguous — refusing to auto-pay.',
+            );
+          })();
 
     if (options.verbose) {
       this.logDebug('PaymentRequired', {
@@ -134,11 +155,26 @@ export class X402Service {
 
     if (transferMethod === EXACT_ASSET_TRANSFER_METHODS.ERC7710) {
       const managerAddress = this.extractDelegationManager(requirement);
-      const delegation = this.findDelegation(account, requirement, managerAddress);
-      const payload = this.buildErc7710PaymentPayload(paymentRequired, requirement, account.address, managerAddress, delegation);
+      const amountStr = this.ensureRequirementAmount(requirement);
+      const delegation = await this.delegation.findForPayment(options.account, {
+        manager: managerAddress,
+        token: requirement.asset as Address,
+        payee: requirement.payTo as Address,
+        amount: amountStr,
+      });
+      const payload = this.buildErc7710PaymentPayload(
+        paymentRequired,
+        requirement,
+        account.address,
+        managerAddress,
+        delegation,
+      );
       const encodedPayload = Buffer.from(JSON.stringify(payload), 'utf-8').toString('base64');
       if (options.verbose) {
-        this.logDebug('PAYMENT-SIGNATURE (erc7710)', JSON.parse(Buffer.from(encodedPayload, 'base64').toString('utf-8')));
+        this.logDebug(
+          'PAYMENT-SIGNATURE (erc7710)',
+          JSON.parse(Buffer.from(encodedPayload, 'base64').toString('utf-8')),
+        );
       }
       const finalResponse = await this.sendWithPayment(options, encodedPayload);
       const finalBody = await finalResponse.text();
@@ -173,11 +209,14 @@ export class X402Service {
         paymentRequired,
         requirement,
         account,
-        options.verbose ?? false
+        options.verbose ?? false,
       );
       const encodedPayload = Buffer.from(JSON.stringify(payload), 'utf-8').toString('base64');
       if (options.verbose) {
-        this.logDebug('PAYMENT-SIGNATURE (eip3009)', JSON.parse(Buffer.from(encodedPayload, 'base64').toString('utf-8')));
+        this.logDebug(
+          'PAYMENT-SIGNATURE (eip3009)',
+          JSON.parse(Buffer.from(encodedPayload, 'base64').toString('utf-8')),
+        );
       }
       const finalResponse = await this.sendWithPayment(options, encodedPayload);
       const finalBody = await finalResponse.text();
@@ -223,13 +262,16 @@ export class X402Service {
     return init;
   }
 
-  private async sendWithPayment(options: HttpRequestOptions, encodedPayload: string): Promise<Response> {
+  private async sendWithPayment(
+    options: HttpRequestOptions,
+    encodedPayload: string,
+  ): Promise<Response> {
     const finalHeaders = { ...options.headers, [X402_HEADERS.PAYMENT_SIGNATURE]: encodedPayload };
-      return fetch(options.url, {
-        method: options.method,
-        headers: finalHeaders,
-        body: options.body,
-      });
+    return fetch(options.url, {
+      method: options.method,
+      headers: finalHeaders,
+      body: options.body,
+    });
   }
 
   private decodePaymentRequired(header: string): PaymentRequired {
@@ -248,7 +290,9 @@ export class X402Service {
       }
       return parsed as PaymentRequired;
     } catch (err) {
-      throw new Error('PAYMENT-REQUIRED header missing and body could not be parsed as PaymentRequired.');
+      throw new Error(
+        'PAYMENT-REQUIRED header missing and body could not be parsed as PaymentRequired.',
+      );
     }
   }
 
@@ -275,7 +319,10 @@ export class X402Service {
     return current;
   }
 
-  private selectRequirement(paymentRequired: PaymentRequired, chainId: number): PaymentRequirements {
+  private selectRequirement(
+    paymentRequired: PaymentRequired,
+    chainId: number,
+  ): PaymentRequirements {
     const network = toCaip2(chainId).toLowerCase();
     const matches = paymentRequired.accepts.filter((req) => {
       const normalized = this.safeNormalizeNetwork(req.network);
@@ -286,7 +333,7 @@ export class X402Service {
       throw new Error(
         `No payment option offered for network ${network}. Supported networks: ${paymentRequired.accepts
           .map((req) => req.network)
-          .join(', ')}`
+          .join(', ')}`,
       );
     }
 
@@ -315,7 +362,8 @@ export class X402Service {
   private detectTransferMethod(requirement: PaymentRequirements, chainId: number): string {
     const extra = (requirement.extra ?? {}) as Record<string, unknown>;
     this.ensureRequirementAmount(requirement);
-    const method = typeof extra.assetTransferMethod === 'string' ? extra.assetTransferMethod : undefined;
+    const method =
+      typeof extra.assetTransferMethod === 'string' ? extra.assetTransferMethod : undefined;
     if (method === EXACT_ASSET_TRANSFER_METHODS.ERC7710) return method;
     if (method === EXACT_ASSET_TRANSFER_METHODS.EIP3009) return method;
 
@@ -331,30 +379,10 @@ export class X402Service {
 
   private isErc7710(requirement: PaymentRequirements): boolean {
     const extra = requirement.extra ?? {};
-    return (extra as Record<string, unknown>).assetTransferMethod === EXACT_ASSET_TRANSFER_METHODS.ERC7710;
-  }
-
-  private findDelegation(account: AccountInfo, requirement: PaymentRequirements, manager: Address): DelegationInfo {
-    const delegations = account.delegations ?? [];
-    const amountNeeded = BigInt(this.ensureRequirementAmount(requirement));
-    const payee = requirement.payTo.toString().toLowerCase();
-    const token = requirement.asset.toLowerCase();
-    const now = Date.now();
-
-    const match = delegations.find((delegation) => {
-      if (delegation.manager.toLowerCase() !== manager.toLowerCase()) return false;
-      if (delegation.token.toLowerCase() !== token) return false;
-      if (delegation.payee.toLowerCase() !== payee) return false;
-      if (BigInt(delegation.amount) < amountNeeded) return false;
-      if (delegation.expiresAt && Date.parse(delegation.expiresAt) <= now) return false;
-      return true;
-    });
-
-    if (!match) {
-      throw new Error('No stored delegation matches this payment requirement.');
-    }
-
-    return match;
+    return (
+      (extra as Record<string, unknown>).assetTransferMethod ===
+      EXACT_ASSET_TRANSFER_METHODS.ERC7710
+    );
   }
 
   private buildErc7710PaymentPayload(
@@ -362,7 +390,7 @@ export class X402Service {
     requirement: PaymentRequirements,
     delegator: Address,
     delegationManager: Address,
-    delegation: DelegationInfo
+    delegation: DelegationInfo,
   ): PaymentPayload<ERC7710Payload> {
     const amountStr = this.ensureRequirementAmount(requirement);
     const amount = BigInt(amountStr);
@@ -390,7 +418,7 @@ export class X402Service {
     paymentRequired: PaymentRequired,
     requirement: PaymentRequirements,
     account: AccountInfo,
-    verbose: boolean
+    verbose: boolean,
   ): Promise<{
     payload: PaymentPayload<{ signature: Hex; authorization: Record<string, string> }>;
     authorization: { validAfter: string; validBefore: string; nonce: Hex };
@@ -467,7 +495,7 @@ export class X402Service {
     transferTypedDataHash: Hex,
     walletAddress: Address,
     chainId: number,
-    verbose: boolean
+    verbose: boolean,
   ): Promise<Hex> {
     const chainIdHex = `0x${chainId.toString(16)}` as Hex;
     const encoded1271Hash = getEncoded1271MessageHash(transferTypedDataHash);
@@ -515,9 +543,8 @@ export class X402Service {
     const safe = JSON.stringify(
       data,
       (_, value) => (typeof value === 'bigint' ? value.toString() : value),
-      2
+      2,
     );
     console.error(`[x402] ${label}: ${safe}`);
   }
-
 }

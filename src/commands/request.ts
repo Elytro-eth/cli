@@ -53,7 +53,12 @@ function buildBody(options: RequestOptions, headers: Record<string, string>): st
 }
 
 export function registerRequestCommand(program: Command, ctx: AppContext): void {
-  const x402 = new X402Service({ account: ctx.account, keyring: ctx.keyring, sdk: ctx.sdk });
+  const x402 = new X402Service({
+    account: ctx.account,
+    keyring: ctx.keyring,
+    sdk: ctx.sdk,
+    delegation: ctx.delegation,
+  });
 
   program
     .command('request')
