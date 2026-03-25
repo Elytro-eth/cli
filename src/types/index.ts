@@ -27,7 +27,11 @@ export interface AccountInfo {
    * Absent = hook never installed via create→activate flow.
    */
   securityStatus?: SecurityStatus;
-  /** Stored ERC-7710 delegations for x402 payments */
+  /**
+   * @deprecated Delegations are now stored separately via DelegationStore.
+   * This field exists only for migration from older data files.
+   * New code must use DelegationStore / DelegationService.
+   */
   delegations?: DelegationInfo[];
   /** Non-null when this account is being recovered; blocks write operations */
   activeRecovery?: {

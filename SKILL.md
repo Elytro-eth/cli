@@ -5,7 +5,7 @@ description: >
   social recovery. Simulate before send, get user approval on risky steps, and explain outcomes in a
   fixed, user-friendly format (no raw JSON unless asked). Deferred OTP completed with otp submit.
   Use for: accounts, transfers, contract calls, email/security setup, guardian recovery. Node >= 24.
-version: 0.7.0
+version: 0.7.1
 homepage: https://elytro.com
 metadata:
   openclaw:
@@ -71,13 +71,61 @@ For batch calls, repeat `--tx` in the same order for both `simulate` and `send`.
 
 Some commands pause for email verification and return an `otpPending` object. Only the user should provide the code. The agent runs `elytro otp submit <id> <6-digit-code>` on their behalf -- do not ask the user to run CLI commands for OTP. Use `elytro otp list` to see pending verifications.
 
-## x402 payments (beta)
+## x402 payments(Beta)
 
-Store provider delegations with `elytro delegation add --manager <addr> --token <addr> --payee <addr> --amount <atomic> --permission 0x...`. Use `delegation list/show/remove` to manage entries. If the provider only offers EIP-3009 (USDC), Elytro auto-signs -- no delegation needed.
+> It's a beta feature. Ask user's permission to proceed.
 
-Preview paywalls: `elytro request --dry-run <url>`
+Elytro handles HTTP 402 paywalls automatically. Two payment paths exist: ERC-7710 delegations (preferred, requires setup) and EIP-3009 (USDC auto-sign, zero setup).
 
-Pay (after user approval): `elytro request <url> [--method POST --json '{"topic":"defi"}']`
+### Delegation lifecycle
+
+Store a delegation provided by the API server:
+
+```bash
+elytro delegation add \
+  --manager 0xDelegationManager --token 0xUSDC \
+  --payee 0xMerchant --amount 1000000 \
+  --permission 0xabc123... \
+  --verify          # optional: simulate on-chain before storing
+```
+
+Before relying on a delegation, verify it is still valid:
+
+```bash
+elytro delegation verify <id>           # single check: expiry + balance + on-chain simulation
+elytro delegation sync --prune          # batch: verify all, remove expired
+```
+
+Renew before expiry (pass the new permission context from the server):
+
+```bash
+elytro delegation renew <id> --expires-at 2026-04-01T00:00:00Z --permission 0xnew... --remove-old
+```
+
+Revoke when no longer needed:
+
+```bash
+elytro delegation revoke <id> --calldata 0x...   # on-chain revoke + local remove
+elytro delegation remove <id>                     # local remove only (no on-chain)
+```
+
+Other management: `delegation list`, `delegation show <id>`.
+
+### Making paid requests
+
+Always dry-run first so the user can see the price:
+
+```bash
+elytro request --dry-run <url>
+```
+
+Then pay (after user approval):
+
+```bash
+elytro request <url> [--method POST --json '{"topic":"defi"}']
+```
+
+If the server offers ERC-7710, the CLI matches a stored delegation automatically. If only EIP-3009 (USDC), Elytro auto-signs with no delegation needed.
 
 Full workflow and troubleshooting: [docs/x402.md](docs/x402.md)
 
@@ -112,7 +160,7 @@ When `recovery initiate` succeeds, present the `recoveryUrl` prominently and tel
 
 ## Approval-required commands
 
-Get explicit user confirmation before running any command listed under "Agent: user approval before running" in [references/commands.md](references/commands.md). This includes all money movement, security changes, recovery writes, and OTP submission.
+Get explicit user confirmation before running any command listed under "Agent: user approval before running" in [references/commands.md](references/commands.md). This includes all money movement, security changes, recovery writes, delegation revocation, and OTP submission.
 
 ---
 

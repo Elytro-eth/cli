@@ -66,11 +66,26 @@ CLI errors include `error.message`, `error.data.hint`, and `suggestion` fields. 
 
 ### x402 / Delegations
 
-| Run                                                    | Tell the user                                                                   |
-| ------------------------------------------------------ | ------------------------------------------------------------------------------- |
-| `delegation list\|add\|show\|remove [--account alias]` | Delegations listed / stored / removed.                                          |
-| `request --dry-run <url>`                              | Preview: paywall requires amount to payee. No funds moved.                      |
-| `request <url> [--method POST --json ...]`             | Paid amount to payee. Tx hash from settlement header. Only after user approval. |
+| Run                                                                                                             | Tell the user                                                                                     |
+| --------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| `delegation add --manager <addr> --token <addr> --payee <addr> --amount <atomic> --permission 0x... [--verify]` | `Done: delegation stored.` Include id, token, payee, amount. Note if `--verify` passed and valid. |
+| `delegation list [--account alias]`                                                                             | `Found <n> delegation(s).` One line per delegation: id, token, payee, amount, expiry.             |
+| `delegation show <id>`                                                                                          | Full delegation details including permissionContext.                                              |
+| `delegation verify <id>`                                                                                        | `Status:` valid / expired / insufficient_balance / invalid_onchain. Include details if failed.    |
+| `delegation sync [--prune]`                                                                                     | `Status:` summary of valid/expired/invalid counts. With `--prune`: note how many expired removed. |
+| `delegation renew <id> --expires-at <iso> [--permission 0x...] [--amount n] [--remove-old]`                     | `Done: delegation renewed.` Include new id and expiry. Note if old was removed.                   |
+| `delegation revoke <id> [--calldata 0x...] [--keep-local]`                                                      | `Done: delegation revoked.` Include tx hash if on-chain. Note if local record kept.               |
+| `delegation remove <id>`                                                                                        | `Done: local delegation record removed.` Note this does NOT revoke on-chain.                      |
+| `request --dry-run <url>`                                                                                       | `Preview:` paywall requires amount to payee. No funds moved.                                      |
+| `request <url> [--method POST --json ...]`                                                                      | `Paid:` amount to payee. Tx hash from settlement. Only after user approval.                       |
+
+**Delegation decision tree for the agent:**
+
+1. User asks to call a paid API -> `request --dry-run <url>` first.
+2. If dry-run shows ERC-7710 requirement -> check `delegation list`. If no match -> guide user through `delegation add` with the server-provided parameters.
+3. If dry-run shows EIP-3009 (USDC) -> no delegation needed, proceed directly.
+4. Before paying -> tell user the amount, token, and payee, then wait for approval.
+5. After paying -> report settlement tx hash. If payment fails with "expired" -> suggest `delegation renew` or `delegation sync --prune`.
 
 ---
 
@@ -79,6 +94,7 @@ CLI errors include `error.message`, `error.data.hint`, and `suggestion` fields. 
 Say what you will run, wait for explicit yes, then execute.
 
 **Money and deploy:** `tx send`, `account activate`, `request <url>` (non-dry-run)
+**Delegation (on-chain):** `delegation revoke` (with `--calldata`)
 **Security:** `security 2fa install`, `security 2fa uninstall`, `security email bind|change`, `security spending-limit` (when setting)
 **Recovery (write):** `recovery contacts set`, `recovery contacts clear`, `recovery initiate`
 **OTP / config:** `otp submit` (user provides code, agent executes), `otp cancel`, `config remove`, `update`

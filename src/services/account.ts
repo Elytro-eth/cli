@@ -1,11 +1,5 @@
 import type { Address } from 'viem';
-import type {
-  StorageAdapter,
-  AccountInfo,
-  SecurityIntent,
-  SecurityStatus,
-  DelegationInfo,
-} from '../types';
+import type { StorageAdapter, AccountInfo, SecurityIntent, SecurityStatus } from '../types';
 import type { RecoveryStatus } from '../types';
 import type { KeyringService } from './keyring';
 import type { SDKService } from './sdk';
@@ -388,44 +382,28 @@ export class AccountService {
     await this.store.save(STORAGE_KEY, this.state);
   }
 
-  // ─── Delegations ─────────────────────────────────────────────────
+  // ─── Delegation migration ──────────────────────────────────────
 
-  listDelegations(aliasOrAddress?: string): DelegationInfo[] {
-    const account = this.requireAccount(aliasOrAddress);
-    return [...(account.delegations ?? [])];
-  }
-
-  getDelegation(aliasOrAddress: string | undefined, delegationId: string): DelegationInfo | null {
-    const account = this.requireAccount(aliasOrAddress);
-    return (account.delegations ?? []).find((d) => d.id === delegationId) ?? null;
-  }
-
-  async addDelegation(
-    aliasOrAddress: string | undefined,
-    delegation: DelegationInfo,
-  ): Promise<DelegationInfo> {
-    const account = this.requireAccount(aliasOrAddress);
-    account.delegations = account.delegations ?? [];
-    const exists = account.delegations.some((d) => d.id === delegation.id);
-    if (exists) {
-      throw new Error(`Delegation "${delegation.id}" already exists for this account.`);
+  /**
+   * Return and clear legacy delegations embedded in AccountInfo.
+   * Called once during bootstrap to migrate data into DelegationStore.
+   */
+  async drainLegacyDelegations(): Promise<
+    Array<{ address: string; delegations: import('../types').DelegationInfo[] }>
+  > {
+    const results: Array<{ address: string; delegations: import('../types').DelegationInfo[] }> =
+      [];
+    let dirty = false;
+    for (const account of this.state.accounts) {
+      if (account.delegations && account.delegations.length > 0) {
+        results.push({ address: account.address, delegations: [...account.delegations] });
+        delete account.delegations;
+        dirty = true;
+      }
     }
-    account.delegations.push(delegation);
-    await this.persist();
-    return delegation;
-  }
-
-  async removeDelegation(aliasOrAddress: string | undefined, delegationId: string): Promise<void> {
-    const account = this.requireAccount(aliasOrAddress);
-    const before = account.delegations?.length ?? 0;
-    if (!before) {
-      throw new Error('No delegations stored for this account.');
+    if (dirty) {
+      await this.persist();
     }
-    const remaining = account.delegations!.filter((d) => d.id !== delegationId);
-    if (remaining.length === before) {
-      throw new Error(`Delegation "${delegationId}" not found.`);
-    }
-    account.delegations = remaining;
-    await this.persist();
+    return results;
   }
 }
