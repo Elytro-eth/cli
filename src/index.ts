@@ -12,6 +12,8 @@ import { registerConfigCommand } from './commands/config';
 import { registerUpdateCommand } from './commands/update';
 import { registerRecoveryCommand } from './commands/recovery';
 import { registerServicesCommand } from './commands/services';
+import { registerSwapCommand } from './commands/swap';
+import { registerTokenCommand } from './commands/token';
 import { runPrune } from './commands/prune';
 import { outputError, sanitizeErrorMessage } from './utils/display';
 import { VERSION } from './version';
@@ -59,6 +61,8 @@ async function main(): Promise<void> {
     registerServicesCommand(program);
 
     registerRecoveryCommand(program, ctx);
+    registerSwapCommand(program, ctx);
+    registerTokenCommand(program, ctx);
     // Phase 4: registerCallCommand(program, ctx);
 
     await program.parseAsync(process.argv);
