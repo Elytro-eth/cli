@@ -191,8 +191,13 @@ export class KeyringService {
    * Import vault from a password-encrypted backup.
    * Decrypts with the backup password, then re-encrypts with vault key.
    */
-  async importVault(encrypted: EncryptedData, password: string, vaultKey: Uint8Array): Promise<void> {
+  async importVault(
+    encrypted: EncryptedData,
+    password: string,
+    vaultKey: Uint8Array,
+  ): Promise<void> {
     const vault = await decrypt<VaultData>(password, encrypted);
+    if (this.vaultKey) this.vaultKey.fill(0);
     this.vaultKey = new Uint8Array(vaultKey);
     // Encrypt before hydrating: hydrateKeyBuffers scrubs hex keys from vault
     const reEncrypted = await encryptWithKey(vaultKey, vault);
@@ -205,6 +210,7 @@ export class KeyringService {
 
   async rekey(newVaultKey: Uint8Array): Promise<void> {
     this.ensureUnlocked();
+    if (this.vaultKey) this.vaultKey.fill(0);
     this.vaultKey = new Uint8Array(newVaultKey);
     await this.persistVault();
   }
