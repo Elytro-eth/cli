@@ -14,6 +14,7 @@ import { registerRecoveryCommand } from './commands/recovery';
 import { registerServicesCommand } from './commands/services';
 import { registerSwapCommand } from './commands/swap';
 import { registerTokenCommand } from './commands/token';
+import { registerHyperliquidCommand } from './hyperliquid/commands/index';
 import { runPrune } from './commands/prune';
 import { outputError, sanitizeErrorMessage } from './utils/display';
 import { VERSION } from './version';
@@ -63,6 +64,7 @@ async function main(): Promise<void> {
     registerRecoveryCommand(program, ctx);
     registerSwapCommand(program, ctx);
     registerTokenCommand(program, ctx);
+    registerHyperliquidCommand(program, ctx);
     // Phase 4: registerCallCommand(program, ctx);
 
     await program.parseAsync(process.argv);
