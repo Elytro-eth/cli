@@ -60,6 +60,20 @@ elytro security status
 
 If `security status` after step 4 shows the hook as not installed, stop and rerun `security 2fa install` before doing anything else. Any "security" change made without the hook in place is a false positive and the account is still wide open.
 
+## Supported chains
+
+| Chain            | ID       | Type    | Native token |
+| ---------------- | -------- | ------- | ------------ |
+| Ethereum         | 1        | mainnet | ETH          |
+| Optimism         | 10       | mainnet | ETH          |
+| Polygon          | 137      | mainnet | MATIC        |
+| Arbitrum One     | 42161    | mainnet | ETH          |
+| Base             | 8453     | mainnet | ETH          |
+| Sepolia          | 11155111 | testnet | ETH          |
+| Optimism Sepolia | 11155420 | testnet | ETH          |
+
+Token list (`elytro token`) covers mainnet chains only. When the user asks to create an account or switch chains, use the chain ID from this table.
+
 ## Daily use
 
 ```bash
